@@ -3,6 +3,14 @@
   "name": "nh-solidarity-ecosystem",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-10",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nh-solidarity-ecosystem",
+      "database_id": "3ddedc39-ef24-45ef-a004-c1080fb73301",
+      "migrations_dir": "migrations"
+    }
+  ],
   "observability": {
     "enabled": true
   }
