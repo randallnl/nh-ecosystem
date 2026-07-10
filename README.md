@@ -40,4 +40,4 @@ See:
 - [Architecture](./docs/architecture.md)
 - [Security Model](./docs/security-model.md)
 - [Initial D1 Schema](./migrations/0001_initial.sql)
-
+- [Event scraper integration](./docs/event-scraper-integration.md)

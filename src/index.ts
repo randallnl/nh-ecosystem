@@ -1,5 +1,6 @@
 interface Env {
   DB: D1Database;
+  SCRAPER_API_TOKEN?: string;
   EMAIL: {
     send(message: {
       to: string;
@@ -559,6 +560,14 @@ export default {
     try {
       if (request.method === "GET" && url.pathname === "/health") {
         return json({ ok: true, authenticated: Boolean(session.user) });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/scraper/organizations") {
+        return handleScraperOrganizations(request, env);
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/scraper/events") {
+        return handleScraperEvents(request, env);
       }
 
       if (request.method === "GET" && url.pathname === "/") {
@@ -1137,10 +1146,10 @@ async function renderAdmin(env: Env, user: User) {
     env.DB.prepare("SELECT COUNT(*) AS count FROM sessions WHERE revoked_at IS NULL AND expires_at > ?").bind(new Date().toISOString()),
   ]);
   const organizations = await env.DB.prepare(
-    `SELECT id, name, slug, contact_email, status
+    `SELECT id, name, slug, contact_email, status, event_source_url, event_scraping_enabled
      FROM organizations
      ORDER BY name`
-  ).all<{ id: string; name: string; slug: string; contact_email: string | null; status: string }>();
+  ).all<{ id: string; name: string; slug: string; contact_email: string | null; status: string; event_source_url: string | null; event_scraping_enabled: number }>();
   const recentUsers = await env.DB.prepare(
     `SELECT u.email, u.name, u.site_role, u.status, GROUP_CONCAT(o.name || ' (' || m.role || ')', ', ') AS organizations
      FROM users u
@@ -1159,7 +1168,7 @@ async function renderAdmin(env: Env, user: User) {
     : "";
   const organizationItems = organizations.results?.length
     ? organizations.results
-        .map((organization) => `<li><strong><a href="/organizations/${escapeHtml(organization.slug)}">${escapeHtml(organization.name)}</a></strong><br /><span class="muted">${escapeHtml(organization.slug)}${organization.contact_email ? ` · ${escapeHtml(organization.contact_email)}` : ""} · ${escapeHtml(organization.status)}</span></li>`)
+        .map((organization) => `<li><strong><a href="/organizations/${escapeHtml(organization.slug)}">${escapeHtml(organization.name)}</a></strong><br /><span class="muted">${escapeHtml(organization.slug)}${organization.contact_email ? ` · ${escapeHtml(organization.contact_email)}` : ""} · ${escapeHtml(organization.status)}${organization.event_source_url ? ` · Event Page URL set` : ""}${organization.event_scraping_enabled ? " · scraping enabled" : ""}</span></li>`)
         .join("")
     : `<li><strong>No organizations yet</strong><br /><span class="muted">Create the first member organization with the form.</span></li>`;
   const userItems = recentUsers.results?.length
@@ -1207,6 +1216,21 @@ async function renderAdmin(env: Env, user: User) {
             <label>
               Summary
               <textarea name="summary" placeholder="Short description or issue areas"></textarea>
+            </label>
+            <label>
+              Event Page URL
+              <input name="event_source_url" type="url" placeholder="https://example.org/events" />
+            </label>
+            <label>
+              Event page format
+              <select name="event_parser">
+                <option value="">Do not scrape yet</option>
+                ${eventParserOptions("")}
+              </select>
+            </label>
+            <label>
+              <input name="event_scraping_enabled" type="checkbox" value="1" />
+              Import events from this organization
             </label>
             <button class="primary" type="submit">Create organization</button>
           </form>
@@ -1272,7 +1296,8 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
   }
 
   const organization = await env.DB.prepare(
-    `SELECT id, name, slug, summary, description, website_url, contact_email, status
+    `SELECT id, name, slug, summary, description, website_url, contact_email, status,
+      event_source_url, event_parser, event_scraping_enabled
      FROM organizations
      WHERE slug = ? AND status != 'archived'`
   )
@@ -1286,6 +1311,9 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
       website_url: string | null;
       contact_email: string | null;
       status: string;
+      event_source_url: string | null;
+      event_parser: string | null;
+      event_scraping_enabled: number;
     }>();
 
   if (!organization) {
@@ -1369,6 +1397,9 @@ function renderOrganizationEditForm(organization: {
   description: string | null;
   website_url: string | null;
   contact_email: string | null;
+  event_source_url: string | null;
+  event_parser: string | null;
+  event_scraping_enabled: number;
 }) {
   return String.raw`
     <section class="panel">
@@ -1388,6 +1419,21 @@ function renderOrganizationEditForm(organization: {
         <label>
           Website URL
           <input name="website_url" type="url" value="${escapeHtml(organization.website_url || "")}" />
+        </label>
+        <label>
+          Event Page URL
+          <input name="event_source_url" type="url" value="${escapeHtml(organization.event_source_url || "")}" placeholder="https://example.org/events" />
+        </label>
+        <label>
+          Event page format
+          <select name="event_parser">
+            <option value="">Do not scrape</option>
+            ${eventParserOptions(organization.event_parser || "")}
+          </select>
+        </label>
+        <label>
+          <input name="event_scraping_enabled" type="checkbox" value="1" ${organization.event_scraping_enabled ? "checked" : ""} />
+          Import events from this organization
         </label>
         <label>
           Summary
@@ -1429,6 +1475,9 @@ async function handleUpdateOrganization(request: Request, env: Env, user: User, 
   const websiteUrl = normalizeOptionalUrl(form.get("website_url"));
   const summary = cleanText(form.get("summary"), 500);
   const description = cleanText(form.get("description"), 2400);
+  const eventSourceUrl = normalizeOptionalUrl(form.get("event_source_url"));
+  const eventParser = cleanEventParser(form.get("event_parser"));
+  const eventScrapingEnabled = form.get("event_scraping_enabled") === "1" && Boolean(eventSourceUrl && eventParser);
 
   if (!name) {
     throw new HttpError(400, "Organization name required", "The organization name cannot be blank.");
@@ -1436,10 +1485,12 @@ async function handleUpdateOrganization(request: Request, env: Env, user: User, 
 
   await env.DB.prepare(
     `UPDATE organizations
-     SET name = ?, contact_email = ?, website_url = ?, summary = ?, description = ?, updated_at = ?
+     SET name = ?, contact_email = ?, website_url = ?, summary = ?, description = ?,
+       event_source_url = ?, event_parser = ?, event_scraping_enabled = ?, updated_at = ?
      WHERE id = ?`
   )
-    .bind(name, contactEmail || null, websiteUrl || null, summary || null, description || null, new Date().toISOString(), organization.id)
+    .bind(name, contactEmail || null, websiteUrl || null, summary || null, description || null,
+      eventSourceUrl || null, eventParser || null, eventScrapingEnabled ? 1 : 0, new Date().toISOString(), organization.id)
     .run();
 
   await writeAudit(env, user.id, "organization.updated", "organization", organization.id, { slug: organization.slug });
@@ -1452,6 +1503,9 @@ async function handleCreateOrganization(request: Request, env: Env, user: User) 
   const slugInput = cleanText(form.get("slug"), 120);
   const contactEmail = normalizeOptionalEmail(form.get("contact_email"));
   const summary = cleanText(form.get("summary"), 500);
+  const eventSourceUrl = normalizeOptionalUrl(form.get("event_source_url"));
+  const eventParser = cleanEventParser(form.get("event_parser"));
+  const eventScrapingEnabled = form.get("event_scraping_enabled") === "1" && Boolean(eventSourceUrl && eventParser);
   const slug = slugify(slugInput || name);
 
   if (!name || !slug) {
@@ -1460,10 +1514,10 @@ async function handleCreateOrganization(request: Request, env: Env, user: User) 
 
   const organizationId = crypto.randomUUID();
   await env.DB.prepare(
-    `INSERT INTO organizations (id, name, slug, summary, contact_email)
-     VALUES (?, ?, ?, ?, ?)`
+    `INSERT INTO organizations (id, name, slug, summary, contact_email, event_source_url, event_parser, event_scraping_enabled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(organizationId, name, slug, summary || null, contactEmail || null)
+    .bind(organizationId, name, slug, summary || null, contactEmail || null, eventSourceUrl || null, eventParser || null, eventScrapingEnabled ? 1 : 0)
     .run();
 
   await writeAudit(env, user.id, "organization.created", "organization", organizationId, { name, slug });
@@ -2097,6 +2151,23 @@ function cleanRole(value: FormDataEntryValue | null) {
   return "viewer";
 }
 
+function cleanEventParser(value: FormDataEntryValue | null) {
+  if (typeof value !== "string" || !value) {
+    return "";
+  }
+  return eventParsers().includes(value) ? value : "";
+}
+
+function eventParsers() {
+  return ["squarespace_events", "heading_date_events", "generic_links", "squarespace_blog", "wordpress_posts"];
+}
+
+function eventParserOptions(selected: string) {
+  return eventParsers()
+    .map((parser) => `<option value="${parser}" ${selected === parser ? "selected" : ""}>${parser}</option>`)
+    .join("");
+}
+
 function slugify(value: string) {
   return value
     .toLowerCase()
@@ -2114,6 +2185,121 @@ function formatRole(role: string) {
     member: "Member",
   };
   return labels[role] ?? role;
+}
+
+type ScrapedEvent = {
+  partner?: unknown;
+  title?: unknown;
+  start_date?: unknown;
+  end_date?: unknown;
+  start_time?: unknown;
+  end_time?: unknown;
+  location?: unknown;
+  description?: unknown;
+  url?: unknown;
+  source_url?: unknown;
+  kind?: unknown;
+  scraped_at?: unknown;
+};
+
+function requireScraperToken(request: Request, env: Env) {
+  if (!env.SCRAPER_API_TOKEN) {
+    throw new HttpError(503, "Scraper integration unavailable", "SCRAPER_API_TOKEN is not configured.");
+  }
+  if (request.headers.get("authorization") !== `Bearer ${env.SCRAPER_API_TOKEN}`) {
+    throw new HttpError(401, "Unauthorized", "A valid scraper bearer token is required.");
+  }
+}
+
+async function handleScraperOrganizations(request: Request, env: Env) {
+  requireScraperToken(request, env);
+  const organizations = await env.DB.prepare(
+    `SELECT id AS organization_id, name, event_source_url AS url, event_parser AS parser, 'event' AS kind
+     FROM organizations
+     WHERE status = 'active' AND event_scraping_enabled = 1
+       AND event_source_url IS NOT NULL AND event_parser IS NOT NULL
+     ORDER BY name`
+  ).all();
+  return Response.json({ partners: organizations.results ?? [] });
+}
+
+async function handleScraperEvents(request: Request, env: Env) {
+  requireScraperToken(request, env);
+  let payload: { records?: ScrapedEvent[] } | ScrapedEvent[];
+  try {
+    payload = await request.json();
+  } catch {
+    throw new HttpError(400, "Invalid JSON", "Send a JSON array or an object with a records array.");
+  }
+  const records = Array.isArray(payload) ? payload : payload.records;
+  if (!Array.isArray(records) || records.length > 500) {
+    throw new HttpError(400, "Invalid records", "Send no more than 500 event records at a time.");
+  }
+
+  const organizations = await env.DB.prepare(
+    "SELECT id, name FROM organizations WHERE status = 'active' AND event_scraping_enabled = 1"
+  ).all<{ id: string; name: string }>();
+  const organizationByName = new Map((organizations.results ?? []).map((org) => [org.name.toLowerCase(), org]));
+  let imported = 0;
+  let skipped = 0;
+
+  for (const raw of records) {
+    const partner = typeof raw.partner === "string" ? raw.partner.trim() : "";
+    const title = typeof raw.title === "string" ? raw.title.trim().slice(0, 220) : "";
+    const startDate = typeof raw.start_date === "string" ? raw.start_date.trim() : "";
+    const organization = organizationByName.get(partner.toLowerCase());
+    if (!organization || !title || !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || (raw.kind && raw.kind !== "event")) {
+      skipped++;
+      continue;
+    }
+
+    const text = (value: unknown, max: number) => typeof value === "string" ? value.trim().slice(0, max) : "";
+    const sourceUrl = text(raw.source_url, 2000);
+    const externalUrl = text(raw.url, 2000);
+    const startTime = text(raw.start_time, 12);
+    const endDate = text(raw.end_date, 10);
+    const endTime = text(raw.end_time, 12);
+    const startsAt = `${startDate}T${normalizeScrapedTime(startTime) || "00:00"}:00`;
+    const endsAt = endDate ? `${endDate}T${normalizeScrapedTime(endTime) || "23:59"}:00` : null;
+    const description = text(raw.description, 5500);
+    const location = text(raw.location, 500);
+    const scrapedAt = text(raw.scraped_at, 40) || new Date().toISOString();
+    const identity = `${organization.id}|${externalUrl || sourceUrl}|${title.toLowerCase()}|${startDate}`;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity));
+    const externalId = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const postId = `scraped:${externalId}`;
+    const body = description || `Event published by ${organization.name}.`;
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO posts (id, organization_id, author_user_id, section, title, body, visibility, status)
+         VALUES (?, ?, 'system:event-scraper', 'event', ?, ?, 'members', 'published')
+         ON CONFLICT(id) DO UPDATE SET title = excluded.title, body = excluded.body, updated_at = CURRENT_TIMESTAMP`
+      ).bind(postId, organization.id, title, body),
+      env.DB.prepare(
+        `INSERT INTO events (post_id, starts_at, ends_at, location_name, registration_url, source_url, external_url, external_id, scraped_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(external_id) DO UPDATE SET starts_at = excluded.starts_at, ends_at = excluded.ends_at,
+           location_name = excluded.location_name, registration_url = excluded.registration_url,
+           source_url = excluded.source_url, external_url = excluded.external_url, scraped_at = excluded.scraped_at`
+      ).bind(postId, startsAt, endsAt, location || null, externalUrl || null, sourceUrl || null, externalUrl || null, externalId, scrapedAt),
+    ]);
+    imported++;
+  }
+
+  return Response.json({ imported, skipped, received: records.length });
+}
+
+function normalizeScrapedTime(value: string) {
+  const match = value.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+  if (!match) return "";
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || "0");
+  const meridiem = match[3]?.toUpperCase();
+  if (minute > 59 || hour > (meridiem ? 12 : 23) || hour < (meridiem ? 1 : 0)) return "";
+  if (meridiem === "AM" && hour === 12) hour = 0;
+  if (meridiem === "PM" && hour !== 12) hour += 12;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
 function sectionFromPath(pathname: string) {
