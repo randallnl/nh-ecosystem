@@ -398,7 +398,8 @@ const baseStyles = String.raw`
   }
 
   input,
-  textarea {
+  textarea,
+  select {
     width: 100%;
     min-height: 48px;
     border: 1px solid var(--line);
@@ -412,6 +413,10 @@ const baseStyles = String.raw`
   textarea {
     min-height: 108px;
     resize: vertical;
+  }
+
+  select {
+    appearance: none;
   }
 
   .notice {
@@ -453,6 +458,27 @@ const baseStyles = String.raw`
     gap: 12px;
   }
 
+  .admin-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 18px;
+  }
+
+  .compact-list {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .compact-list li {
+    padding: 12px;
+    border: 1px solid rgba(216, 228, 242, 0.68);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.64);
+  }
+
   @media (max-width: 900px) {
     main {
       grid-template-rows: auto auto auto;
@@ -480,6 +506,10 @@ const baseStyles = String.raw`
 
     .dashboard-hero {
       display: grid;
+    }
+
+    .admin-columns {
+      grid-template-columns: 1fr;
     }
   }
 
@@ -552,6 +582,20 @@ export default {
       if (request.method === "POST" && url.pathname === "/logout") {
         assertSameOrigin(request);
         return handleLogout(session, env);
+      }
+
+      if (request.method === "POST" && url.pathname === "/admin/organizations") {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        requireSiteAdmin(user);
+        return handleCreateOrganization(request, env, user);
+      }
+
+      if (request.method === "POST" && url.pathname === "/admin/invitations") {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        requireSiteAdmin(user);
+        return handleAdminInvite(request, env, user);
       }
 
       if (url.pathname === "/app") {
@@ -743,10 +787,37 @@ async function renderAdmin(env: Env, user: User) {
     env.DB.prepare("SELECT COUNT(*) AS count FROM invitations WHERE accepted_at IS NULL"),
     env.DB.prepare("SELECT COUNT(*) AS count FROM sessions WHERE revoked_at IS NULL AND expires_at > ?").bind(new Date().toISOString()),
   ]);
+  const organizations = await env.DB.prepare(
+    `SELECT id, name, slug, contact_email, status
+     FROM organizations
+     ORDER BY name`
+  ).all<{ id: string; name: string; slug: string; contact_email: string | null; status: string }>();
+  const recentUsers = await env.DB.prepare(
+    `SELECT u.email, u.name, u.site_role, u.status, GROUP_CONCAT(o.name || ' (' || m.role || ')', ', ') AS organizations
+     FROM users u
+     LEFT JOIN organization_memberships m ON m.user_id = u.id
+     LEFT JOIN organizations o ON o.id = m.organization_id
+     GROUP BY u.id
+     ORDER BY u.created_at DESC
+     LIMIT 8`
+  ).all<{ email: string; name: string | null; site_role: string; status: string; organizations: string | null }>();
 
   const users = Number((stats[0].results?.[0] as { count?: number } | undefined)?.count ?? 0);
   const invites = Number((stats[1].results?.[0] as { count?: number } | undefined)?.count ?? 0);
   const sessions = Number((stats[2].results?.[0] as { count?: number } | undefined)?.count ?? 0);
+  const organizationOptions = organizations.results?.length
+    ? organizations.results.map((organization) => `<option value="${escapeHtml(organization.id)}">${escapeHtml(organization.name)}</option>`).join("")
+    : "";
+  const organizationItems = organizations.results?.length
+    ? organizations.results
+        .map((organization) => `<li><strong>${escapeHtml(organization.name)}</strong><br /><span class="muted">${escapeHtml(organization.slug)}${organization.contact_email ? ` · ${escapeHtml(organization.contact_email)}` : ""} · ${escapeHtml(organization.status)}</span></li>`)
+        .join("")
+    : `<li><strong>No organizations yet</strong><br /><span class="muted">Create the first member organization with the form.</span></li>`;
+  const userItems = recentUsers.results?.length
+    ? recentUsers.results
+        .map((member) => `<li><strong>${escapeHtml(member.name || member.email)}</strong><br /><span class="muted">${escapeHtml(member.email)} · ${escapeHtml(member.site_role)} · ${escapeHtml(member.status)}${member.organizations ? ` · ${escapeHtml(member.organizations)}` : ""}</span></li>`)
+        .join("")
+    : `<li><strong>No members yet</strong><br /><span class="muted">Invited members will appear here.</span></li>`;
 
   return layout("Admin tools", String.raw`
     <section class="dashboard">
@@ -754,7 +825,7 @@ async function renderAdmin(env: Env, user: User) {
         <div>
           <p class="eyebrow">Site admin</p>
           <h1>Admin tools</h1>
-          <p class="lede">This route is protected by both a valid session and the <code>site_admin</code> role.</p>
+          <p class="lede">Create organizations, invite members, and assign the first roles that define who can participate in the ecosystem.</p>
         </div>
         <form method="post" action="/logout"><button class="danger" type="submit">Sign out</button></form>
       </div>
@@ -764,8 +835,187 @@ async function renderAdmin(env: Env, user: User) {
         <div class="tile"><strong>Open invites</strong><span>${invites} invite or review records</span></div>
         <div class="tile"><strong>Active sessions</strong><span>${sessions} unrevoked sessions</span></div>
       </section>
+
+      <section class="admin-columns" aria-label="Onboarding forms">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Create organization</h2>
+            <span class="badge">Org profile</span>
+          </div>
+          <form method="post" action="/admin/organizations">
+            <label>
+              Organization name
+              <input name="name" type="text" required />
+            </label>
+            <label>
+              Slug
+              <input name="slug" type="text" placeholder="generated from name if blank" />
+            </label>
+            <label>
+              Contact email
+              <input name="contact_email" type="email" />
+            </label>
+            <label>
+              Summary
+              <textarea name="summary" placeholder="Short description or issue areas"></textarea>
+            </label>
+            <button class="primary" type="submit">Create organization</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Invite member</h2>
+            <span class="badge">Magic link</span>
+          </div>
+          <form method="post" action="/admin/invitations">
+            <label>
+              Name
+              <input name="name" type="text" />
+            </label>
+            <label>
+              Email
+              <input name="email" type="email" required />
+            </label>
+            <label>
+              Organization
+              <select name="organization_id">
+                <option value="">No organization yet</option>
+                ${organizationOptions}
+              </select>
+            </label>
+            <label>
+              Organization role
+              <select name="role">
+                <option value="viewer">Viewer</option>
+                <option value="contributor">Contributor</option>
+                <option value="org_admin">Organization admin</option>
+              </select>
+            </label>
+            <button class="primary" type="submit">Invite member</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="admin-columns" aria-label="Onboarding lists">
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Organizations</h2>
+            <span class="badge">${organizations.results?.length ?? 0} total</span>
+          </div>
+          <ul class="compact-list">${organizationItems}</ul>
+        </aside>
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Recent members</h2>
+            <span class="badge">${recentUsers.results?.length ?? 0} shown</span>
+          </div>
+          <ul class="compact-list">${userItems}</ul>
+        </aside>
+      </section>
     </section>
   `, user);
+}
+
+async function handleCreateOrganization(request: Request, env: Env, user: User) {
+  const form = await request.formData();
+  const name = cleanText(form.get("name"), 180);
+  const slugInput = cleanText(form.get("slug"), 120);
+  const contactEmail = normalizeOptionalEmail(form.get("contact_email"));
+  const summary = cleanText(form.get("summary"), 500);
+  const slug = slugify(slugInput || name);
+
+  if (!name || !slug) {
+    throw new HttpError(400, "Organization details required", "Organization name is required.");
+  }
+
+  const organizationId = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO organizations (id, name, slug, summary, contact_email)
+     VALUES (?, ?, ?, ?, ?)`
+  )
+    .bind(organizationId, name, slug, summary || null, contactEmail || null)
+    .run();
+
+  await writeAudit(env, user.id, "organization.created", "organization", organizationId, { name, slug });
+  return redirect("/admin");
+}
+
+async function handleAdminInvite(request: Request, env: Env, user: User) {
+  const form = await request.formData();
+  const email = normalizeEmail(form.get("email"));
+  const name = cleanText(form.get("name"), 120);
+  const organizationId = cleanText(form.get("organization_id"), 80);
+  const role = cleanRole(form.get("role"));
+
+  if (!email) {
+    throw new HttpError(400, "Email required", "Enter the member email to invite.");
+  }
+
+  if (organizationId) {
+    const organization = await env.DB.prepare("SELECT id FROM organizations WHERE id = ?")
+      .bind(organizationId)
+      .first<{ id: string }>();
+    if (!organization) {
+      throw new HttpError(400, "Organization not found", "Choose an existing organization.");
+    }
+  }
+
+  let invitedUser = await env.DB.prepare("SELECT id, status FROM users WHERE email = ?")
+    .bind(email)
+    .first<{ id: string; status: string }>();
+
+  if (!invitedUser) {
+    const invitedUserId = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO users (id, email, name, site_role, status)
+       VALUES (?, ?, ?, 'member', 'invited')`
+    )
+      .bind(invitedUserId, email, name || null)
+      .run();
+    invitedUser = { id: invitedUserId, status: "invited" };
+  } else if (name) {
+    await env.DB.prepare("UPDATE users SET name = COALESCE(name, ?), updated_at = ? WHERE id = ?")
+      .bind(name, new Date().toISOString(), invitedUser.id)
+      .run();
+  }
+
+  if (organizationId) {
+    await env.DB.prepare(
+      `INSERT INTO organization_memberships (organization_id, user_id, role)
+       VALUES (?, ?, ?)
+       ON CONFLICT(organization_id, user_id) DO UPDATE SET role = excluded.role`
+    )
+      .bind(organizationId, invitedUser.id, role)
+      .run();
+  }
+
+  const token = randomToken();
+  const tokenHash = await sha256Hex(token);
+  const expiresAt = daysFromNow(7);
+  const invitationId = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO invitations (id, email, organization_id, invited_role, token_hash, invited_by_user_id, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(invitationId, email, organizationId || null, role, tokenHash, user.id, expiresAt),
+    env.DB.prepare(
+      `INSERT INTO auth_tokens (id, email, token_hash, purpose, expires_at)
+       VALUES (?, ?, ?, 'invite', ?)`
+    ).bind(crypto.randomUUID(), email, tokenHash, expiresAt),
+  ]);
+
+  const verifyUrl = new URL("/auth/verify", request.url);
+  verifyUrl.searchParams.set("token", token);
+  await sendInviteEmail(env, email, verifyUrl.toString());
+
+  await writeAudit(env, user.id, "member.invited", "user", invitedUser.id, {
+    email,
+    organization_id: organizationId || null,
+    role,
+  });
+
+  return redirect("/admin");
 }
 
 async function handleSetupPage(env: Env, user: User | null) {
@@ -914,6 +1164,39 @@ async function sendMagicLinkEmail(env: Env, to: string, magicLink: string) {
   });
 }
 
+async function sendInviteEmail(env: Env, to: string, magicLink: string) {
+  const subject = "You are invited to NH Solidarity Ecosystem";
+  const text = [
+    "You have been invited to NH Solidarity Ecosystem.",
+    "",
+    "Use this link to activate your account and sign in:",
+    "",
+    magicLink,
+    "",
+    "This invitation link expires in 7 days and can only be used once.",
+  ].join("\n");
+  const htmlBody = String.raw`
+    <div style="font-family:Inter,Segoe UI,Arial,sans-serif;line-height:1.55;color:#10233f">
+      <h1 style="font-size:24px;margin:0 0 12px">You are invited</h1>
+      <p>NH Solidarity Ecosystem is a secure member-only space for New Hampshire organizations to coordinate around legislation, events, and projects.</p>
+      <p>
+        <a href="${escapeHtml(magicLink)}" style="display:inline-block;padding:12px 18px;border-radius:999px;background:#1f67b1;color:#fff;text-decoration:none;font-weight:700">
+          Accept invite
+        </a>
+      </p>
+      <p style="color:#5b6f88">This invitation link expires in 7 days and can only be used once.</p>
+    </div>
+  `;
+
+  await env.EMAIL.send({
+    to,
+    from: { email: FROM_EMAIL, name: FROM_NAME },
+    subject,
+    html: htmlBody,
+    text,
+  });
+}
+
 async function handleVerify(url: URL, env: Env) {
   const token = url.searchParams.get("token") ?? "";
   if (!token) {
@@ -947,6 +1230,7 @@ async function handleVerify(url: URL, env: Env) {
   await env.DB.batch([
     env.DB.prepare("UPDATE auth_tokens SET consumed_at = ? WHERE id = ?").bind(now, tokenRow.id),
     env.DB.prepare("UPDATE users SET status = 'active', last_seen_at = ?, updated_at = ? WHERE id = ?").bind(now, now, user.id),
+    env.DB.prepare("UPDATE invitations SET accepted_at = ? WHERE email = ? AND accepted_at IS NULL").bind(now, user.email),
   ]);
 
   await writeAudit(env, user.id, "auth.login", "user", user.id, { email: user.email });
@@ -1178,11 +1462,33 @@ function normalizeEmail(value: FormDataEntryValue | null) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
 }
 
+function normalizeOptionalEmail(value: FormDataEntryValue | null) {
+  if (typeof value !== "string" || !value.trim()) {
+    return "";
+  }
+  return normalizeEmail(value);
+}
+
 function cleanText(value: FormDataEntryValue | null, max: number) {
   if (typeof value !== "string") {
     return "";
   }
   return value.trim().slice(0, max);
+}
+
+function cleanRole(value: FormDataEntryValue | null) {
+  if (value === "contributor" || value === "org_admin") {
+    return value;
+  }
+  return "viewer";
+}
+
+function slugify(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
 }
 
 function readCookie(request: Request, name: string) {
