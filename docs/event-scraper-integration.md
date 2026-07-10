@@ -27,6 +27,12 @@ An organization appears in the feed only when it is active, has an **Event Page
 URL** and supported parser, and has **Import events from this organization**
 enabled on its profile.
 
+Supported parser values currently include `squarespace_events`,
+`heading_date_events`, `generic_links`, `squarespace_blog`,
+`shopify_blog_events`, and `wordpress_posts`. Use `shopify_blog_events` for
+Shopify blog-style event listing pages such as Queerlective's upcoming events
+blog.
+
 The event endpoint accepts the scraper's existing normalized fields:
 `partner`, `title`, `start_date`, `end_date`, `start_time`, `end_time`,
 `location`, `description`, `url`, `source_url`, `kind`, and `scraped_at`.

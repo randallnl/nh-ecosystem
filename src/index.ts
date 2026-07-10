@@ -2159,7 +2159,14 @@ function cleanEventParser(value: FormDataEntryValue | null) {
 }
 
 function eventParsers() {
-  return ["squarespace_events", "heading_date_events", "generic_links", "squarespace_blog", "wordpress_posts"];
+  return [
+    "squarespace_events",
+    "heading_date_events",
+    "generic_links",
+    "squarespace_blog",
+    "shopify_blog_events",
+    "wordpress_posts",
+  ];
 }
 
 function eventParserOptions(selected: string) {
@@ -2279,7 +2286,7 @@ async function handleScraperEvents(request: Request, env: Env) {
       env.DB.prepare(
         `INSERT INTO events (post_id, starts_at, ends_at, location_name, registration_url, source_url, external_url, external_id, scraped_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(external_id) DO UPDATE SET starts_at = excluded.starts_at, ends_at = excluded.ends_at,
+         ON CONFLICT(post_id) DO UPDATE SET starts_at = excluded.starts_at, ends_at = excluded.ends_at,
            location_name = excluded.location_name, registration_url = excluded.registration_url,
            source_url = excluded.source_url, external_url = excluded.external_url, scraped_at = excluded.scraped_at`
       ).bind(postId, startsAt, endsAt, location || null, externalUrl || null, sourceUrl || null, externalUrl || null, externalId, scrapedAt),

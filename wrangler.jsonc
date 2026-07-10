@@ -3,6 +3,13 @@
   "name": "nh-solidarity-ecosystem",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-10",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "nhsolidarityecosystem.com",
+      "custom_domain": true
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
