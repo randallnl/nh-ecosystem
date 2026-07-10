@@ -1,5 +1,15 @@
 interface Env {
   DB: D1Database;
+  EMAIL: {
+    send(message: {
+      to: string;
+      from: { email: string; name: string };
+      replyTo?: string;
+      subject: string;
+      html: string;
+      text: string;
+    }): Promise<unknown>;
+  };
 }
 
 type User = {
@@ -18,6 +28,8 @@ type SessionContext = {
 const SESSION_COOKIE = "nhse_session";
 const SESSION_DAYS = 30;
 const TOKEN_MINUTES = 20;
+const FROM_EMAIL = "no-reply@nhsolidarityecosystem.com";
+const FROM_NAME = "NH Solidarity Ecosystem";
 
 const baseStyles = String.raw`
   :root {
@@ -851,20 +863,55 @@ async function handleLogin(request: Request, env: Env) {
     .bind(crypto.randomUUID(), email, tokenHash, expiresAt)
     .run();
 
-  const verifyUrl = new URL(request.url);
-  verifyUrl.pathname = "/auth/verify";
-  verifyUrl.search = `?token=${encodeURIComponent(token)}`;
+  const verifyUrl = new URL("/auth/verify", request.url);
+  verifyUrl.searchParams.set("token", token);
+  await sendMagicLinkEmail(env, email, verifyUrl.toString());
 
-  return html(layout("Sign-in link ready", String.raw`
+  await writeAudit(env, user.id, "auth.magic_link_sent", "user", user.id, { email });
+
+  return html(layout("Check your email", String.raw`
     <section class="auth-shell">
       <div class="auth-card">
-        <p class="eyebrow">Magic link generated</p>
-        <h1>Sign in</h1>
-        <p class="lede">Email delivery is not wired yet, so this MVP displays the short-lived link here. It expires in ${TOKEN_MINUTES} minutes and can only be used once.</p>
-        <div class="notice"><a href="${escapeHtml(verifyUrl.toString())}">Continue to member dashboard</a></div>
+        <p class="eyebrow">Magic link sent</p>
+        <h1>Check your email</h1>
+        <p class="lede">We sent a sign-in link to ${escapeHtml(email)}. It expires in ${TOKEN_MINUTES} minutes and can only be used once.</p>
+        <div class="notice">For your security, this page no longer displays the sign-in token.</div>
       </div>
     </section>
   `, null));
+}
+
+async function sendMagicLinkEmail(env: Env, to: string, magicLink: string) {
+  const subject = "Your NH Solidarity Ecosystem sign-in link";
+  const text = [
+    "Use this link to sign in to NH Solidarity Ecosystem:",
+    "",
+    magicLink,
+    "",
+    `This link expires in ${TOKEN_MINUTES} minutes and can only be used once.`,
+    "If you did not request this, you can ignore this email.",
+  ].join("\n");
+  const htmlBody = String.raw`
+    <div style="font-family:Inter,Segoe UI,Arial,sans-serif;line-height:1.55;color:#10233f">
+      <h1 style="font-size:24px;margin:0 0 12px">Sign in to NH Solidarity Ecosystem</h1>
+      <p>Use the button below to open your member dashboard.</p>
+      <p>
+        <a href="${escapeHtml(magicLink)}" style="display:inline-block;padding:12px 18px;border-radius:999px;background:#1f67b1;color:#fff;text-decoration:none;font-weight:700">
+          Sign in
+        </a>
+      </p>
+      <p style="color:#5b6f88">This link expires in ${TOKEN_MINUTES} minutes and can only be used once.</p>
+      <p style="color:#5b6f88">If you did not request this, you can ignore this email.</p>
+    </div>
+  `;
+
+  await env.EMAIL.send({
+    to,
+    from: { email: FROM_EMAIL, name: FROM_NAME },
+    subject,
+    html: htmlBody,
+    text,
+  });
 }
 
 async function handleVerify(url: URL, env: Env) {

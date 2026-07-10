@@ -11,6 +11,14 @@
       "migrations_dir": "migrations"
     }
   ],
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "allowed_sender_addresses": [
+        "no-reply@nhsolidarityecosystem.com"
+      ]
+    }
+  ],
   "observability": {
     "enabled": true
   }
