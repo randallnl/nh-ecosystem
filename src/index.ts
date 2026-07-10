@@ -11,14 +11,14 @@ const page = String.raw`<!doctype html>
     <style>
       :root {
         color-scheme: light;
-        --ink: #18201c;
-        --muted: #53645c;
-        --paper: #faf8f1;
+        --ink: #132238;
+        --muted: #53677f;
+        --paper: #f5f9ff;
         --panel: #ffffff;
-        --line: #d9ded4;
-        --accent: #146c5f;
-        --accent-2: #b7422d;
-        --accent-3: #e3b23c;
+        --line: #d8e4f2;
+        --accent: #2567a8;
+        --accent-2: #65a8d8;
+        --accent-3: #f0c75e;
       }
 
       * {
@@ -33,8 +33,8 @@ const page = String.raw`<!doctype html>
           "Segoe UI", sans-serif;
         color: var(--ink);
         background:
-          linear-gradient(135deg, rgba(20, 108, 95, 0.12), transparent 34%),
-          linear-gradient(315deg, rgba(183, 66, 45, 0.13), transparent 40%),
+          linear-gradient(135deg, rgba(37, 103, 168, 0.14), transparent 36%),
+          linear-gradient(315deg, rgba(101, 168, 216, 0.18), transparent 42%),
           var(--paper);
       }
 
@@ -93,15 +93,15 @@ const page = String.raw`<!doctype html>
         min-height: 36px;
         padding: 8px 12px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.62);
+        background: rgba(255, 255, 255, 0.72);
         font-size: 0.9rem;
         font-weight: 700;
       }
 
       .panel {
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.82);
-        box-shadow: 0 24px 70px rgba(37, 45, 40, 0.11);
+        background: rgba(255, 255, 255, 0.88);
+        box-shadow: 0 24px 70px rgba(33, 76, 120, 0.1);
         padding: 24px;
       }
 
@@ -132,14 +132,14 @@ const page = String.raw`<!doctype html>
         height: 12px;
         margin-top: 5px;
         background: var(--accent-3);
-        border: 2px solid var(--ink);
+        border: 2px solid var(--accent);
       }
 
       .bar {
         display: grid;
         grid-template-columns: repeat(4, 1fr);
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.76);
+        background: rgba(255, 255, 255, 0.82);
       }
 
       .bar div {
