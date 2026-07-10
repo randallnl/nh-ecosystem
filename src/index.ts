@@ -479,6 +479,23 @@ const baseStyles = String.raw`
     background: rgba(255, 255, 255, 0.64);
   }
 
+  .compact-list a,
+  .tile a {
+    color: var(--accent);
+    font-weight: 800;
+  }
+
+  .post-body {
+    white-space: pre-wrap;
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
   @media (max-width: 900px) {
     main {
       grid-template-rows: auto auto auto;
@@ -596,6 +613,31 @@ export default {
         const user = requireUser(session.user);
         requireSiteAdmin(user);
         return handleAdminInvite(request, env, user);
+      }
+
+      const section = sectionFromPath(url.pathname);
+      if (request.method === "GET" && section) {
+        const user = requireUser(session.user);
+        return html(await renderSectionPage(env, user, section));
+      }
+
+      if (request.method === "POST" && url.pathname === "/posts") {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        return handleCreatePost(request, env, user);
+      }
+
+      if (request.method === "GET" && url.pathname.startsWith("/posts/")) {
+        const user = requireUser(session.user);
+        const postId = decodeURIComponent(url.pathname.replace("/posts/", "")).split("/")[0];
+        return html(await renderPostDetail(env, user, postId));
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/comments")) {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/comments", "")).split("/")[0];
+        return handleCreateComment(request, env, user, postId);
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/organizations/")) {
@@ -755,6 +797,14 @@ async function renderApp(env: Env, user: User) {
      WHERE status = 'published'
      GROUP BY section`
   ).all<{ section: string; count: number }>();
+  const recentPosts = await env.DB.prepare(
+    `SELECT p.id, p.section, p.title, p.created_at, o.name AS organization_name
+     FROM posts p
+     LEFT JOIN organizations o ON o.id = p.organization_id
+     WHERE p.status = 'published'
+     ORDER BY p.created_at DESC
+     LIMIT 6`
+  ).all<{ id: string; section: string; title: string; created_at: string; organization_name: string | null }>();
 
   const countBySection = new Map(postCounts.results?.map((row) => [row.section, row.count]) ?? []);
   const orgCards = memberships.results?.length
@@ -774,6 +824,11 @@ async function renderApp(env: Env, user: User) {
         `)
         .join("")
     : `<div class="tile"><strong>No organization memberships yet</strong><span>A site admin can attach your account to an organization.</span></div>`;
+  const recentPostItems = recentPosts.results?.length
+    ? recentPosts.results
+        .map((post) => `<li><strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong><br /><span class="muted">${escapeHtml(sectionLabel(post.section))}${post.organization_name ? ` · ${escapeHtml(post.organization_name)}` : ""} · ${escapeHtml(formatDate(post.created_at))}</span></li>`)
+        .join("")
+    : `<li><strong>No posts yet</strong><br /><span class="muted">Create the first legislation note, event, project, or update from a section page.</span></li>`;
 
   return layout("Member dashboard", String.raw`
     <section class="dashboard">
@@ -790,10 +845,19 @@ async function renderApp(env: Env, user: User) {
       </div>
 
       <section class="dashboard-grid" aria-label="Protected sections">
-        <div class="tile"><strong>Legislation</strong><span>${countBySection.get("legislation") ?? 0} published notes</span></div>
-        <div class="tile"><strong>Events</strong><span>${countBySection.get("event") ?? 0} published events</span></div>
-        <div class="tile"><strong>Projects</strong><span>${countBySection.get("project") ?? 0} published projects</span></div>
+        <div class="tile"><strong><a href="/legislation">Legislation</a></strong><span>${countBySection.get("legislation") ?? 0} published notes</span></div>
+        <div class="tile"><strong><a href="/events">Events</a></strong><span>${countBySection.get("event") ?? 0} published events</span></div>
+        <div class="tile"><strong><a href="/projects">Projects</a></strong><span>${countBySection.get("project") ?? 0} published projects</span></div>
+        <div class="tile"><strong><a href="/updates">Updates</a></strong><span>${countBySection.get("update") ?? 0} published updates</span></div>
       </section>
+
+      <aside class="panel">
+        <div class="panel-head">
+          <h2>Recent activity</h2>
+          <span class="badge">${recentPosts.results?.length ?? 0} shown</span>
+        </div>
+        <ul class="compact-list">${recentPostItems}</ul>
+      </aside>
 
       <aside class="panel">
         <div class="panel-head">
@@ -804,6 +868,266 @@ async function renderApp(env: Env, user: User) {
       </aside>
     </section>
   `, user);
+}
+
+async function renderSectionPage(env: Env, user: User, section: string) {
+  const meta = sectionMeta(section);
+  const [posts, writableOrganizations] = await Promise.all([
+    env.DB.prepare(
+      `SELECT p.id, p.title, p.body, p.created_at, p.organization_id, o.name AS organization_name, o.slug AS organization_slug, u.name AS author_name, u.email AS author_email,
+        (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'published') AS comment_count
+       FROM posts p
+       LEFT JOIN organizations o ON o.id = p.organization_id
+       JOIN users u ON u.id = p.author_user_id
+       WHERE p.section = ? AND p.status = 'published'
+       ORDER BY p.created_at DESC
+       LIMIT 40`
+    ).bind(section).all<{
+      id: string;
+      title: string;
+      body: string;
+      created_at: string;
+      organization_id: string | null;
+      organization_name: string | null;
+      organization_slug: string | null;
+      author_name: string | null;
+      author_email: string;
+      comment_count: number;
+    }>(),
+    getWritableOrganizations(env, user),
+  ]);
+
+  const canCreate = user.site_role === "site_admin" || writableOrganizations.length > 0;
+  const postItems = posts.results?.length
+    ? posts.results
+        .map((post) => String.raw`
+          <li>
+            <strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong>
+            <p class="muted">${escapeHtml(excerpt(post.body, 180))}</p>
+            <div class="meta">
+              ${post.organization_name ? `<span class="badge">${escapeHtml(post.organization_name)}</span>` : `<span class="badge">Ecosystem-wide</span>`}
+              <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
+              <span class="badge">${Number(post.comment_count)} comments</span>
+            </div>
+          </li>
+        `)
+        .join("")
+    : `<li><strong>No ${escapeHtml(meta.pluralLower)} yet</strong><br /><span class="muted">When members publish here, the latest posts will appear in this section.</span></li>`;
+
+  return layout(meta.title, String.raw`
+    <section class="dashboard">
+      <div class="dashboard-hero panel">
+        <div>
+          <p class="eyebrow">Member section</p>
+          <h1>${escapeHtml(meta.title)}</h1>
+          <p class="lede">${escapeHtml(meta.description)}</p>
+        </div>
+        <div class="stack">
+          <a class="button secondary" href="/app">Dashboard</a>
+        </div>
+      </div>
+
+      <section class="admin-columns">
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Recent ${escapeHtml(meta.pluralLower)}</h2>
+            <span class="badge">${posts.results?.length ?? 0} shown</span>
+          </div>
+          <ul class="compact-list">${postItems}</ul>
+        </aside>
+
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Create ${escapeHtml(meta.singularLower)}</h2>
+            <span class="badge">${canCreate ? "Available" : "Contributor role needed"}</span>
+          </div>
+          ${canCreate ? renderPostForm(section, writableOrganizations, user) : `<p class="muted">Ask an organization admin or site admin to give you contributor access before posting.</p>`}
+        </aside>
+      </section>
+    </section>
+  `, user);
+}
+
+function renderPostForm(section: string, organizations: Array<{ id: string; name: string }>, user: User) {
+  const organizationOptions = [
+    ...(user.site_role === "site_admin" ? [`<option value="">Ecosystem-wide</option>`] : []),
+    ...organizations.map((organization) => `<option value="${escapeHtml(organization.id)}">${escapeHtml(organization.name)}</option>`),
+  ].join("");
+
+  return String.raw`
+    <form method="post" action="/posts">
+      <input name="section" type="hidden" value="${escapeHtml(section)}" />
+      <label>
+        Organization
+        <select name="organization_id" ${organizationOptions ? "" : "disabled"}>
+          ${organizationOptions}
+        </select>
+      </label>
+      <label>
+        Title
+        <input name="title" type="text" required />
+      </label>
+      <label>
+        Body
+        <textarea name="body" required placeholder="Share the context, ask, update, or next step."></textarea>
+      </label>
+      <button class="primary" type="submit">Publish</button>
+    </form>
+  `;
+}
+
+async function renderPostDetail(env: Env, user: User, postId: string) {
+  const post = await env.DB.prepare(
+    `SELECT p.id, p.section, p.title, p.body, p.visibility, p.status, p.created_at, p.organization_id,
+      o.name AS organization_name, o.slug AS organization_slug,
+      u.name AS author_name, u.email AS author_email
+     FROM posts p
+     LEFT JOIN organizations o ON o.id = p.organization_id
+     JOIN users u ON u.id = p.author_user_id
+     WHERE p.id = ?`
+  )
+    .bind(postId)
+    .first<{
+      id: string;
+      section: string;
+      title: string;
+      body: string;
+      visibility: string;
+      status: string;
+      created_at: string;
+      organization_id: string | null;
+      organization_name: string | null;
+      organization_slug: string | null;
+      author_name: string | null;
+      author_email: string;
+    }>();
+
+  if (!post || post.status !== "published") {
+    throw new HttpError(404, "Post not found", "That post does not exist or is not published.");
+  }
+
+  await requireCanReadPost(env, user, post.organization_id, post.visibility);
+
+  const comments = await env.DB.prepare(
+    `SELECT c.id, c.body, c.created_at, u.name AS author_name, u.email AS author_email
+     FROM comments c
+     JOIN users u ON u.id = c.author_user_id
+     WHERE c.post_id = ? AND c.status = 'published'
+     ORDER BY c.created_at`
+  )
+    .bind(post.id)
+    .all<{ id: string; body: string; created_at: string; author_name: string | null; author_email: string }>();
+  const commentItems = comments.results?.length
+    ? comments.results
+        .map((comment) => `<li><strong>${escapeHtml(comment.author_name || comment.author_email)}</strong><br /><span class="muted">${escapeHtml(formatDate(comment.created_at))}</span><p class="post-body">${escapeHtml(comment.body)}</p></li>`)
+        .join("")
+    : `<li><strong>No comments yet</strong><br /><span class="muted">Start the discussion below.</span></li>`;
+  const meta = sectionMeta(post.section);
+
+  return layout(post.title, String.raw`
+    <section class="dashboard">
+      <article class="panel">
+        <div class="panel-head">
+          <h2>${escapeHtml(meta.title)}</h2>
+          <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
+        </div>
+        <h1>${escapeHtml(post.title)}</h1>
+        <div class="meta">
+          ${post.organization_name ? `<span class="badge">${escapeHtml(post.organization_name)}</span>` : `<span class="badge">Ecosystem-wide</span>`}
+          <span class="badge">${escapeHtml(post.author_name || post.author_email)}</span>
+        </div>
+        <p class="post-body lede">${escapeHtml(post.body)}</p>
+        <div class="actions">
+          <a class="button secondary" href="${escapeHtml(meta.path)}">Back to ${escapeHtml(meta.title)}</a>
+          ${post.organization_slug ? `<a class="button secondary" href="/organizations/${escapeHtml(post.organization_slug)}">Organization profile</a>` : ""}
+        </div>
+      </article>
+
+      <section class="admin-columns">
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Comments</h2>
+            <span class="badge">${comments.results?.length ?? 0} total</span>
+          </div>
+          <ul class="compact-list">${commentItems}</ul>
+        </aside>
+
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Add comment</h2>
+            <span class="badge">Members</span>
+          </div>
+          <form method="post" action="/posts/${escapeHtml(post.id)}/comments">
+            <label>
+              Comment
+              <textarea name="body" required></textarea>
+            </label>
+            <button class="primary" type="submit">Comment</button>
+          </form>
+        </aside>
+      </section>
+    </section>
+  `, user);
+}
+
+async function handleCreatePost(request: Request, env: Env, user: User) {
+  const form = await request.formData();
+  const section = cleanSection(form.get("section"));
+  const organizationId = cleanText(form.get("organization_id"), 80);
+  const title = cleanText(form.get("title"), 220);
+  const body = cleanText(form.get("body"), 6000);
+
+  if (!section || !title || !body) {
+    throw new HttpError(400, "Post details required", "Choose a section and include a title and body.");
+  }
+
+  if (!organizationId && user.site_role !== "site_admin") {
+    throw new HttpError(403, "Organization required", "Choose an organization you can post for.");
+  }
+
+  if (organizationId) {
+    await requireCanPostForOrganization(env, user, organizationId);
+  }
+
+  const postId = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO posts (id, organization_id, author_user_id, section, title, body, visibility, status)
+     VALUES (?, ?, ?, ?, ?, ?, 'members', 'published')`
+  )
+    .bind(postId, organizationId || null, user.id, section, title, body)
+    .run();
+
+  await writeAudit(env, user.id, "post.created", "post", postId, { section, organization_id: organizationId || null });
+  return redirect(`/posts/${postId}`);
+}
+
+async function handleCreateComment(request: Request, env: Env, user: User, postId: string) {
+  const post = await env.DB.prepare("SELECT id, organization_id, visibility, status FROM posts WHERE id = ?")
+    .bind(postId)
+    .first<{ id: string; organization_id: string | null; visibility: string; status: string }>();
+
+  if (!post || post.status !== "published") {
+    throw new HttpError(404, "Post not found", "That post does not exist or is not published.");
+  }
+
+  await requireCanReadPost(env, user, post.organization_id, post.visibility);
+
+  const form = await request.formData();
+  const body = cleanText(form.get("body"), 3000);
+  if (!body) {
+    throw new HttpError(400, "Comment required", "Write a comment before submitting.");
+  }
+
+  const commentId = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO comments (id, post_id, author_user_id, body)
+     VALUES (?, ?, ?, ?)`
+  )
+    .bind(commentId, post.id, user.id, body)
+    .run();
+
+  await writeAudit(env, user.id, "comment.created", "comment", commentId, { post_id: post.id });
+  return redirect(`/posts/${post.id}`);
 }
 
 async function renderAdmin(env: Env, user: User) {
@@ -1540,6 +1864,67 @@ function requireSiteAdmin(user: User) {
   }
 }
 
+async function getWritableOrganizations(env: Env, user: User) {
+  if (user.site_role === "site_admin") {
+    const organizations = await env.DB.prepare(
+      "SELECT id, name FROM organizations WHERE status = 'active' ORDER BY name"
+    ).all<{ id: string; name: string }>();
+    return organizations.results ?? [];
+  }
+
+  const organizations = await env.DB.prepare(
+    `SELECT o.id, o.name
+     FROM organization_memberships m
+     JOIN organizations o ON o.id = m.organization_id
+     WHERE m.user_id = ?
+       AND m.role IN ('contributor', 'org_admin')
+       AND o.status = 'active'
+     ORDER BY o.name`
+  )
+    .bind(user.id)
+    .all<{ id: string; name: string }>();
+  return organizations.results ?? [];
+}
+
+async function requireCanPostForOrganization(env: Env, user: User, organizationId: string) {
+  if (user.site_role === "site_admin") {
+    const organization = await env.DB.prepare("SELECT id FROM organizations WHERE id = ? AND status = 'active'")
+      .bind(organizationId)
+      .first<{ id: string }>();
+    if (organization) {
+      return;
+    }
+  } else {
+    const membership = await env.DB.prepare(
+      `SELECT role FROM organization_memberships
+       WHERE organization_id = ? AND user_id = ? AND role IN ('contributor', 'org_admin')`
+    )
+      .bind(organizationId, user.id)
+      .first<{ role: string }>();
+    if (membership) {
+      return;
+    }
+  }
+
+  throw new HttpError(403, "Contributor access required", "You need contributor or organization admin access to post for that organization.");
+}
+
+async function requireCanReadPost(env: Env, user: User, organizationId: string | null, visibility: string) {
+  if (visibility !== "organization" || user.site_role === "site_admin" || !organizationId) {
+    return;
+  }
+
+  const membership = await env.DB.prepare(
+    "SELECT role FROM organization_memberships WHERE organization_id = ? AND user_id = ?"
+  )
+    .bind(organizationId, user.id)
+    .first<{ role: string }>();
+
+  if (!membership) {
+    throw new HttpError(403, "Organization-only post", "You need to belong to this organization to view this post.");
+  }
+}
+
 function assertSameOrigin(request: Request) {
   const origin = request.headers.get("Origin");
   if (!origin) {
@@ -1599,6 +1984,10 @@ function renderNav(user: User | null) {
       <div class="nav-links" aria-label="Member navigation">
         <a href="/">Home</a>
         ${user ? `<a href="/app">Dashboard</a>` : `<a href="/login">Sign in</a>`}
+        ${user ? `<a href="/legislation">Legislation</a>` : ""}
+        ${user ? `<a href="/events">Events</a>` : ""}
+        ${user ? `<a href="/projects">Projects</a>` : ""}
+        ${user ? `<a href="/updates">Updates</a>` : ""}
         ${user?.site_role === "site_admin" ? `<a href="/admin">Admin</a>` : ""}
         ${!user ? `<a href="/request-invite">Request invite</a>` : `<span>${escapeHtml(user.email)}</span>`}
       </div>
@@ -1687,6 +2076,13 @@ function normalizeOptionalUrl(value: FormDataEntryValue | null) {
   }
 }
 
+function cleanSection(value: FormDataEntryValue | null) {
+  if (value === "legislation" || value === "event" || value === "project" || value === "update") {
+    return value;
+  }
+  return "";
+}
+
 function cleanText(value: FormDataEntryValue | null, max: number) {
   if (typeof value !== "string") {
     return "";
@@ -1718,6 +2114,67 @@ function formatRole(role: string) {
     member: "Member",
   };
   return labels[role] ?? role;
+}
+
+function sectionFromPath(pathname: string) {
+  const sections: Record<string, string> = {
+    "/legislation": "legislation",
+    "/events": "event",
+    "/projects": "project",
+    "/updates": "update",
+  };
+  return sections[pathname] ?? "";
+}
+
+function sectionMeta(section: string) {
+  const sections: Record<string, { title: string; singularLower: string; pluralLower: string; path: string; description: string }> = {
+    legislation: {
+      title: "Legislation",
+      singularLower: "legislation note",
+      pluralLower: "legislation notes",
+      path: "/legislation",
+      description: "Share bill tracking notes, hearings, testimony needs, positions, and legislative context.",
+    },
+    event: {
+      title: "Events",
+      singularLower: "event",
+      pluralLower: "events",
+      path: "/events",
+      description: "Share meetings, trainings, actions, coalition gatherings, and dates members should know about.",
+    },
+    project: {
+      title: "Projects",
+      singularLower: "project",
+      pluralLower: "projects",
+      path: "/projects",
+      description: "Coordinate shared work, working groups, deliverables, and cross-organization collaboration.",
+    },
+    update: {
+      title: "Updates",
+      singularLower: "update",
+      pluralLower: "updates",
+      path: "/updates",
+      description: "Post general updates, announcements, requests, and community notes.",
+    },
+  };
+  return sections[section] ?? sections.update;
+}
+
+function sectionLabel(section: string) {
+  return sectionMeta(section).title;
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
+function excerpt(value: string, max: number) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}...` : normalized;
 }
 
 function readCookie(request: Request, name: string) {
