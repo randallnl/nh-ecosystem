@@ -19,6 +19,9 @@ const page = String.raw`<!doctype html>
         --accent: #2567a8;
         --accent-2: #65a8d8;
         --accent-3: #f0c75e;
+        --radius-lg: 28px;
+        --radius-md: 20px;
+        --radius-pill: 999px;
       }
 
       * {
@@ -93,6 +96,7 @@ const page = String.raw`<!doctype html>
         min-height: 36px;
         padding: 8px 12px;
         border: 1px solid var(--line);
+        border-radius: var(--radius-pill);
         background: rgba(255, 255, 255, 0.72);
         font-size: 0.9rem;
         font-weight: 700;
@@ -100,6 +104,7 @@ const page = String.raw`<!doctype html>
 
       .panel {
         border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
         background: rgba(255, 255, 255, 0.88);
         box-shadow: 0 24px 70px rgba(33, 76, 120, 0.1);
         padding: 24px;
@@ -131,6 +136,7 @@ const page = String.raw`<!doctype html>
         width: 12px;
         height: 12px;
         margin-top: 5px;
+        border-radius: var(--radius-pill);
         background: var(--accent-3);
         border: 2px solid var(--accent);
       }
@@ -138,18 +144,19 @@ const page = String.raw`<!doctype html>
       .bar {
         display: grid;
         grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
         border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
         background: rgba(255, 255, 255, 0.82);
+        padding: 10px;
       }
 
       .bar div {
         min-height: 96px;
         padding: 16px;
-        border-right: 1px solid var(--line);
-      }
-
-      .bar div:last-child {
-        border-right: 0;
+        border: 1px solid rgba(216, 228, 242, 0.72);
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.68);
       }
 
       .bar strong {
@@ -178,12 +185,7 @@ const page = String.raw`<!doctype html>
         }
 
         .bar div {
-          border-right: 0;
-          border-bottom: 1px solid var(--line);
-        }
-
-        .bar div:last-child {
-          border-bottom: 0;
+          min-height: 88px;
         }
       }
     </style>
