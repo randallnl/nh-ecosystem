@@ -598,6 +598,19 @@ export default {
         return handleAdminInvite(request, env, user);
       }
 
+      if (request.method === "GET" && url.pathname.startsWith("/organizations/")) {
+        const user = requireUser(session.user);
+        const slug = decodeURIComponent(url.pathname.replace("/organizations/", "")).split("/")[0];
+        return html(await renderOrganizationProfile(env, user, slug));
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/organizations/")) {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        const slug = decodeURIComponent(url.pathname.replace("/organizations/", "")).split("/")[0];
+        return handleUpdateOrganization(request, env, user, slug);
+      }
+
       if (url.pathname === "/app") {
         const user = requireUser(session.user);
         return html(await renderApp(env, user));
@@ -684,7 +697,7 @@ function renderLogin(message = "") {
       <div class="auth-card">
         <p class="eyebrow">Invite-only access</p>
         <h1>Member sign in</h1>
-        <p class="lede">Enter the email connected to your approved member account. The current MVP generates a short-lived magic link on the next screen until email delivery is wired in.</p>
+        <p class="lede">Enter the email connected to your approved member account. We will send a short-lived magic link to your inbox.</p>
         <form method="post" action="/login">
           <label>
             Email
@@ -727,14 +740,14 @@ function renderInviteRequest() {
 
 async function renderApp(env: Env, user: User) {
   const memberships = await env.DB.prepare(
-    `SELECT o.name, o.slug, m.role
+    `SELECT o.name, o.slug, o.summary, o.contact_email, o.website_url, m.role
      FROM organization_memberships m
      JOIN organizations o ON o.id = m.organization_id
      WHERE m.user_id = ?
      ORDER BY o.name`
   )
     .bind(user.id)
-    .all<{ name: string; slug: string; role: string }>();
+    .all<{ name: string; slug: string; summary: string | null; contact_email: string | null; website_url: string | null; role: string }>();
 
   const postCounts = await env.DB.prepare(
     `SELECT section, COUNT(*) AS count
@@ -744,11 +757,23 @@ async function renderApp(env: Env, user: User) {
   ).all<{ section: string; count: number }>();
 
   const countBySection = new Map(postCounts.results?.map((row) => [row.section, row.count]) ?? []);
-  const orgItems = memberships.results?.length
+  const orgCards = memberships.results?.length
     ? memberships.results
-        .map((membership) => `<li><span class="mark">${escapeHtml(membership.role.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(membership.name)}</strong><br />${escapeHtml(membership.role)}</span></li>`)
+        .map((membership) => String.raw`
+          <div class="tile">
+            <strong>${escapeHtml(membership.name)}</strong>
+            <span>${escapeHtml(membership.summary || "Profile details are still being filled in.")}</span>
+            <div class="status">
+              <span>${escapeHtml(formatRole(membership.role))}</span>
+              ${membership.contact_email ? `<span>${escapeHtml(membership.contact_email)}</span>` : ""}
+            </div>
+            <div class="actions">
+              <a class="button secondary" href="/organizations/${escapeHtml(membership.slug)}">Open profile</a>
+            </div>
+          </div>
+        `)
         .join("")
-    : `<li><span class="mark">!</span><span>No organization memberships yet. A site admin can attach your account to an organization.</span></li>`;
+    : `<div class="tile"><strong>No organization memberships yet</strong><span>A site admin can attach your account to an organization.</span></div>`;
 
   return layout("Member dashboard", String.raw`
     <section class="dashboard">
@@ -775,7 +800,7 @@ async function renderApp(env: Env, user: User) {
           <h2>Your organizations</h2>
           <span class="badge">${memberships.results?.length ?? 0} linked</span>
         </div>
-        <ul class="list">${orgItems}</ul>
+        <div class="dashboard-grid">${orgCards}</div>
       </aside>
     </section>
   `, user);
@@ -810,7 +835,7 @@ async function renderAdmin(env: Env, user: User) {
     : "";
   const organizationItems = organizations.results?.length
     ? organizations.results
-        .map((organization) => `<li><strong>${escapeHtml(organization.name)}</strong><br /><span class="muted">${escapeHtml(organization.slug)}${organization.contact_email ? ` · ${escapeHtml(organization.contact_email)}` : ""} · ${escapeHtml(organization.status)}</span></li>`)
+        .map((organization) => `<li><strong><a href="/organizations/${escapeHtml(organization.slug)}">${escapeHtml(organization.name)}</a></strong><br /><span class="muted">${escapeHtml(organization.slug)}${organization.contact_email ? ` · ${escapeHtml(organization.contact_email)}` : ""} · ${escapeHtml(organization.status)}</span></li>`)
         .join("")
     : `<li><strong>No organizations yet</strong><br /><span class="muted">Create the first member organization with the form.</span></li>`;
   const userItems = recentUsers.results?.length
@@ -915,6 +940,186 @@ async function renderAdmin(env: Env, user: User) {
       </section>
     </section>
   `, user);
+}
+
+async function renderOrganizationProfile(env: Env, user: User, slug: string) {
+  if (!slug) {
+    throw new HttpError(404, "Organization not found", "That organization profile does not exist.");
+  }
+
+  const organization = await env.DB.prepare(
+    `SELECT id, name, slug, summary, description, website_url, contact_email, status
+     FROM organizations
+     WHERE slug = ? AND status != 'archived'`
+  )
+    .bind(slug)
+    .first<{
+      id: string;
+      name: string;
+      slug: string;
+      summary: string | null;
+      description: string | null;
+      website_url: string | null;
+      contact_email: string | null;
+      status: string;
+    }>();
+
+  if (!organization) {
+    throw new HttpError(404, "Organization not found", "That organization profile does not exist.");
+  }
+
+  const membership = await env.DB.prepare(
+    `SELECT role FROM organization_memberships
+     WHERE organization_id = ? AND user_id = ?`
+  )
+    .bind(organization.id, user.id)
+    .first<{ role: string }>();
+
+  if (!membership && user.site_role !== "site_admin") {
+    throw new HttpError(403, "Members only", "You need to belong to this organization to view its profile.");
+  }
+
+  const canEdit = user.site_role === "site_admin" || membership?.role === "org_admin";
+  const members = await env.DB.prepare(
+    `SELECT u.name, u.email, m.role
+     FROM organization_memberships m
+     JOIN users u ON u.id = m.user_id
+     WHERE m.organization_id = ?
+     ORDER BY m.role DESC, u.name, u.email`
+  )
+    .bind(organization.id)
+    .all<{ name: string | null; email: string; role: string }>();
+  const memberItems = members.results?.length
+    ? members.results
+        .map((member) => `<li><strong>${escapeHtml(member.name || member.email)}</strong><br /><span class="muted">${escapeHtml(member.email)} · ${escapeHtml(formatRole(member.role))}</span></li>`)
+        .join("")
+    : `<li><strong>No linked members</strong><br /><span class="muted">Invite members from the admin tools.</span></li>`;
+
+  return layout(organization.name, String.raw`
+    <section class="dashboard">
+      <div class="dashboard-hero panel">
+        <div>
+          <p class="eyebrow">${escapeHtml(formatRole(membership?.role || user.site_role))}</p>
+          <h1>${escapeHtml(organization.name)}</h1>
+          <p class="lede">${escapeHtml(organization.summary || "This organization profile is ready for details.")}</p>
+          <div class="status">
+            <span>${escapeHtml(organization.status)}</span>
+            ${organization.contact_email ? `<span>${escapeHtml(organization.contact_email)}</span>` : ""}
+            ${organization.website_url ? `<span>${escapeHtml(organization.website_url)}</span>` : ""}
+          </div>
+        </div>
+        <div class="stack">
+          <a class="button secondary" href="/app">Dashboard</a>
+          ${user.site_role === "site_admin" ? `<a class="button secondary" href="/admin">Admin tools</a>` : ""}
+        </div>
+      </div>
+
+      <section class="admin-columns">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Profile</h2>
+            <span class="badge">${canEdit ? "Editable" : "Read only"}</span>
+          </div>
+          <p class="muted">${escapeHtml(organization.description || organization.summary || "No long description yet.")}</p>
+          ${organization.website_url ? `<div class="actions"><a class="button secondary" href="${escapeHtml(organization.website_url)}">Visit website</a></div>` : ""}
+        </article>
+
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Members</h2>
+            <span class="badge">${members.results?.length ?? 0} linked</span>
+          </div>
+          <ul class="compact-list">${memberItems}</ul>
+        </aside>
+      </section>
+
+      ${canEdit ? renderOrganizationEditForm(organization) : ""}
+    </section>
+  `, user);
+}
+
+function renderOrganizationEditForm(organization: {
+  name: string;
+  slug: string;
+  summary: string | null;
+  description: string | null;
+  website_url: string | null;
+  contact_email: string | null;
+}) {
+  return String.raw`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Edit organization profile</h2>
+        <span class="badge">Org admin</span>
+      </div>
+      <form method="post" action="/organizations/${escapeHtml(organization.slug)}">
+        <label>
+          Organization name
+          <input name="name" type="text" value="${escapeHtml(organization.name)}" required />
+        </label>
+        <label>
+          Contact email
+          <input name="contact_email" type="email" value="${escapeHtml(organization.contact_email || "")}" />
+        </label>
+        <label>
+          Website URL
+          <input name="website_url" type="url" value="${escapeHtml(organization.website_url || "")}" />
+        </label>
+        <label>
+          Summary
+          <textarea name="summary">${escapeHtml(organization.summary || "")}</textarea>
+        </label>
+        <label>
+          Description
+          <textarea name="description">${escapeHtml(organization.description || "")}</textarea>
+        </label>
+        <button class="primary" type="submit">Save profile</button>
+      </form>
+    </section>
+  `;
+}
+
+async function handleUpdateOrganization(request: Request, env: Env, user: User, slug: string) {
+  const organization = await env.DB.prepare("SELECT id, slug FROM organizations WHERE slug = ?")
+    .bind(slug)
+    .first<{ id: string; slug: string }>();
+
+  if (!organization) {
+    throw new HttpError(404, "Organization not found", "That organization profile does not exist.");
+  }
+
+  const membership = await env.DB.prepare(
+    `SELECT role FROM organization_memberships
+     WHERE organization_id = ? AND user_id = ?`
+  )
+    .bind(organization.id, user.id)
+    .first<{ role: string }>();
+
+  if (user.site_role !== "site_admin" && membership?.role !== "org_admin") {
+    throw new HttpError(403, "Org admin only", "You need organization admin access to edit this profile.");
+  }
+
+  const form = await request.formData();
+  const name = cleanText(form.get("name"), 180);
+  const contactEmail = normalizeOptionalEmail(form.get("contact_email"));
+  const websiteUrl = normalizeOptionalUrl(form.get("website_url"));
+  const summary = cleanText(form.get("summary"), 500);
+  const description = cleanText(form.get("description"), 2400);
+
+  if (!name) {
+    throw new HttpError(400, "Organization name required", "The organization name cannot be blank.");
+  }
+
+  await env.DB.prepare(
+    `UPDATE organizations
+     SET name = ?, contact_email = ?, website_url = ?, summary = ?, description = ?, updated_at = ?
+     WHERE id = ?`
+  )
+    .bind(name, contactEmail || null, websiteUrl || null, summary || null, description || null, new Date().toISOString(), organization.id)
+    .run();
+
+  await writeAudit(env, user.id, "organization.updated", "organization", organization.id, { slug: organization.slug });
+  return redirect(`/organizations/${organization.slug}`);
 }
 
 async function handleCreateOrganization(request: Request, env: Env, user: User) {
@@ -1469,6 +1674,19 @@ function normalizeOptionalEmail(value: FormDataEntryValue | null) {
   return normalizeEmail(value);
 }
 
+function normalizeOptionalUrl(value: FormDataEntryValue | null) {
+  if (typeof value !== "string" || !value.trim()) {
+    return "";
+  }
+
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
 function cleanText(value: FormDataEntryValue | null, max: number) {
   if (typeof value !== "string") {
     return "";
@@ -1489,6 +1707,17 @@ function slugify(value: string) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
+}
+
+function formatRole(role: string) {
+  const labels: Record<string, string> = {
+    org_admin: "Organization admin",
+    contributor: "Contributor",
+    viewer: "Viewer",
+    site_admin: "Site admin",
+    member: "Member",
+  };
+  return labels[role] ?? role;
 }
 
 function readCookie(request: Request, name: string) {
