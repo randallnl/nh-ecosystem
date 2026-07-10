@@ -11,16 +11,18 @@ const page = String.raw`<!doctype html>
     <style>
       :root {
         color-scheme: light;
-        --ink: #132238;
-        --muted: #53677f;
-        --paper: #f5f9ff;
-        --panel: #ffffff;
-        --line: #d8e4f2;
-        --accent: #2567a8;
-        --accent-2: #65a8d8;
-        --accent-3: #f0c75e;
-        --radius-lg: 28px;
-        --radius-md: 20px;
+        --ink: #10233f;
+        --muted: #5b6f88;
+        --paper: #f6faff;
+        --panel: rgba(255, 255, 255, 0.82);
+        --line: rgba(154, 184, 217, 0.42);
+        --accent: #1f67b1;
+        --accent-2: #63a5df;
+        --accent-3: #f2c85f;
+        --soft-blue: #e9f4ff;
+        --radius-xl: 34px;
+        --radius-lg: 26px;
+        --radius-md: 18px;
         --radius-pill: 999px;
       }
 
@@ -36,88 +38,217 @@ const page = String.raw`<!doctype html>
           "Segoe UI", sans-serif;
         color: var(--ink);
         background:
-          linear-gradient(135deg, rgba(37, 103, 168, 0.14), transparent 36%),
-          linear-gradient(315deg, rgba(101, 168, 216, 0.18), transparent 42%),
-          var(--paper);
+          radial-gradient(circle at 18% 16%, rgba(99, 165, 223, 0.24), transparent 31%),
+          linear-gradient(140deg, #fbfdff 0%, #eef7ff 48%, #f8fbff 100%);
+      }
+
+      body::before {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        content: "";
+        background-image:
+          linear-gradient(rgba(31, 103, 177, 0.05) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(31, 103, 177, 0.05) 1px, transparent 1px);
+        background-size: 44px 44px;
+        mask-image: linear-gradient(to bottom, black, transparent 76%);
       }
 
       main {
-        width: min(1120px, calc(100% - 32px));
+        position: relative;
+        width: min(1180px, calc(100% - 32px));
         min-height: 100vh;
         margin: 0 auto;
         display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 34px;
+        padding: 28px 0 38px;
+      }
+
+      .nav {
+        display: flex;
         align-items: center;
-        gap: 32px;
-        padding: 44px 0;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 12px 14px 12px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-pill);
+        background: rgba(255, 255, 255, 0.72);
+        box-shadow: 0 18px 60px rgba(31, 82, 135, 0.08);
+        backdrop-filter: blur(18px);
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        font-weight: 850;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 36px;
+        height: 36px;
+        place-items: center;
+        border-radius: var(--radius-pill);
+        color: #ffffff;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        box-shadow: 0 10px 24px rgba(31, 103, 177, 0.25);
+      }
+
+      .nav-links {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .nav-links span,
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 36px;
+        padding: 8px 14px;
+        border-radius: var(--radius-pill);
+        font-size: 0.92rem;
+        font-weight: 750;
+      }
+
+      .nav-links span {
+        color: var(--muted);
       }
 
       .hero {
         display: grid;
-        grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
-        gap: 48px;
+        grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
+        gap: 42px;
         align-items: center;
       }
 
       .eyebrow {
-        margin: 0 0 16px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 34px;
+        margin: 0 0 18px;
+        padding: 7px 13px;
+        border: 1px solid rgba(31, 103, 177, 0.16);
+        border-radius: var(--radius-pill);
         color: var(--accent);
-        font-size: 0.78rem;
-        font-weight: 800;
-        letter-spacing: 0;
-        text-transform: uppercase;
+        background: rgba(255, 255, 255, 0.76);
+        font-size: 0.82rem;
+        font-weight: 850;
       }
 
       h1 {
         margin: 0;
-        max-width: 760px;
-        font-size: clamp(3rem, 8vw, 6.8rem);
-        line-height: 0.9;
+        max-width: 780px;
+        font-size: clamp(3.3rem, 8.4vw, 7.35rem);
+        line-height: 0.88;
         letter-spacing: 0;
       }
 
       .lede {
-        max-width: 680px;
+        max-width: 690px;
         margin: 28px 0 0;
         color: var(--muted);
-        font-size: clamp(1.05rem, 2vw, 1.32rem);
+        font-size: clamp(1.08rem, 2vw, 1.34rem);
         line-height: 1.58;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 32px;
+      }
+
+      .button {
+        border: 1px solid transparent;
+        text-decoration: none;
+      }
+
+      .button.primary {
+        color: #ffffff;
+        background: var(--accent);
+        box-shadow: 0 16px 34px rgba(31, 103, 177, 0.25);
+      }
+
+      .button.secondary {
+        color: var(--accent);
+        border-color: rgba(31, 103, 177, 0.18);
+        background: rgba(255, 255, 255, 0.7);
       }
 
       .status {
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
-        margin-top: 30px;
+        margin-top: 24px;
       }
 
       .status span {
         display: inline-flex;
         align-items: center;
-        min-height: 36px;
-        padding: 8px 12px;
+        min-height: 34px;
+        padding: 7px 12px;
         border: 1px solid var(--line);
         border-radius: var(--radius-pill);
-        background: rgba(255, 255, 255, 0.72);
-        font-size: 0.9rem;
-        font-weight: 700;
+        background: rgba(255, 255, 255, 0.68);
+        color: #27425f;
+        font-size: 0.88rem;
+        font-weight: 750;
       }
 
       .panel {
+        position: relative;
+        overflow: hidden;
         border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        background: rgba(255, 255, 255, 0.88);
-        box-shadow: 0 24px 70px rgba(33, 76, 120, 0.1);
-        padding: 24px;
+        border-radius: var(--radius-xl);
+        background: var(--panel);
+        box-shadow: 0 28px 90px rgba(31, 82, 135, 0.14);
+        padding: 22px;
+        backdrop-filter: blur(22px);
+      }
+
+      .panel::before {
+        position: absolute;
+        inset: 0 0 auto;
+        height: 6px;
+        content: "";
+        background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
       }
 
       .panel h2 {
-        margin: 0 0 18px;
-        font-size: 1.1rem;
+        margin: 0;
+        font-size: 1.08rem;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 6px 10px;
+        border-radius: var(--radius-pill);
+        color: var(--accent);
+        background: var(--soft-blue);
+        font-size: 0.78rem;
+        font-weight: 850;
       }
 
       .list {
         display: grid;
-        gap: 14px;
+        gap: 12px;
         margin: 0;
         padding: 0;
         list-style: none;
@@ -125,54 +256,69 @@ const page = String.raw`<!doctype html>
 
       .list li {
         display: grid;
-        grid-template-columns: 12px 1fr;
+        grid-template-columns: 34px 1fr;
         gap: 12px;
         align-items: start;
+        padding: 12px;
+        border: 1px solid rgba(216, 228, 242, 0.68);
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.64);
         color: var(--muted);
         line-height: 1.45;
       }
 
       .mark {
-        width: 12px;
-        height: 12px;
-        margin-top: 5px;
+        display: grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
         border-radius: var(--radius-pill);
-        background: var(--accent-3);
-        border: 2px solid var(--accent);
+        color: #ffffff;
+        background: var(--accent);
+        font-size: 0.86rem;
+        font-weight: 850;
       }
 
       .bar {
         display: grid;
         grid-template-columns: repeat(4, 1fr);
-        gap: 10px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        background: rgba(255, 255, 255, 0.82);
-        padding: 10px;
+        gap: 12px;
       }
 
       .bar div {
-        min-height: 96px;
-        padding: 16px;
-        border: 1px solid rgba(216, 228, 242, 0.72);
-        border-radius: var(--radius-md);
-        background: rgba(255, 255, 255, 0.68);
+        min-height: 138px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: rgba(255, 255, 255, 0.72);
+        box-shadow: 0 18px 52px rgba(31, 82, 135, 0.08);
       }
 
       .bar strong {
         display: block;
-        margin-bottom: 8px;
+        margin-bottom: 10px;
+        font-size: 1rem;
       }
 
       .bar span {
         color: var(--muted);
-        font-size: 0.92rem;
-        line-height: 1.4;
+        font-size: 0.94rem;
+        line-height: 1.44;
       }
 
-      @media (max-width: 820px) {
+      @media (max-width: 900px) {
         main {
-          align-items: start;
+          grid-template-rows: auto auto auto;
+          padding-top: 18px;
+        }
+
+        .nav {
+          align-items: flex-start;
+          border-radius: var(--radius-lg);
+        }
+
+        .nav-links {
+          display: none;
         }
 
         .hero {
@@ -181,26 +327,56 @@ const page = String.raw`<!doctype html>
         }
 
         .bar {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      @media (max-width: 620px) {
+        h1 {
+          font-size: clamp(3rem, 18vw, 4.6rem);
+        }
+
+        .panel {
+          padding: 16px;
+        }
+
+        .bar {
           grid-template-columns: 1fr;
         }
 
         .bar div {
-          min-height: 88px;
+          min-height: auto;
         }
       }
     </style>
   </head>
   <body>
     <main>
+      <nav class="nav" aria-label="Site">
+        <div class="brand">
+          <span class="brand-mark">NH</span>
+          <span>Solidarity Ecosystem</span>
+        </div>
+        <div class="nav-links" aria-label="Planned sections">
+          <span>Legislation</span>
+          <span>Events</span>
+          <span>Projects</span>
+          <span>Organizations</span>
+        </div>
+      </nav>
+
       <section class="hero" aria-label="NH Solidarity Ecosystem">
         <div>
           <p class="eyebrow">Member-only community in development</p>
           <h1>NH Solidarity Ecosystem</h1>
           <p class="lede">
-            A secure space for New Hampshire organizations to coordinate around
-            legislation, events, shared projects, and the slow practical work of
-            staying connected.
+            A secure coordination space for New Hampshire organizations working
+            across legislation, events, shared projects, and long-term mutual support.
           </p>
+          <div class="actions" aria-label="Project status actions">
+            <a class="button primary" href="https://github.com/randallnl/nh-ecosystem">View project</a>
+            <span class="button secondary">Cloudflare Worker preview</span>
+          </div>
           <div class="status" aria-label="Planned platform components">
             <span>Invite-only access</span>
             <span>Organization profiles</span>
@@ -210,12 +386,15 @@ const page = String.raw`<!doctype html>
         </div>
 
         <aside class="panel" aria-label="Build roadmap">
-          <h2>First build priorities</h2>
+          <div class="panel-head">
+            <h2>First build priorities</h2>
+            <span class="badge">Roadmap</span>
+          </div>
           <ul class="list">
-            <li><span class="mark"></span><span>Member accounts, invitations, and organization roles.</span></li>
-            <li><span class="mark"></span><span>Legislation notes, events, projects, updates, and comments.</span></li>
-            <li><span class="mark"></span><span>Private uploads backed by Cloudflare R2 and structured data in D1.</span></li>
-            <li><span class="mark"></span><span>Admin tools for approvals, moderation, and community stewardship.</span></li>
+            <li><span class="mark">1</span><span>Member accounts, invitations, and organization roles.</span></li>
+            <li><span class="mark">2</span><span>Legislation notes, events, projects, updates, and comments.</span></li>
+            <li><span class="mark">3</span><span>Private uploads backed by Cloudflare R2 and structured data in D1.</span></li>
+            <li><span class="mark">4</span><span>Admin tools for approvals, moderation, and community stewardship.</span></li>
           </ul>
         </aside>
       </section>
