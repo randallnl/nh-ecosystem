@@ -514,8 +514,6 @@ const baseStyles = String.raw`
     aspect-ratio: 16 / 9;
     object-fit: cover;
     border-radius: var(--radius-md);
-    border: 1px solid rgba(216, 228, 242, 0.78);
-    background: var(--soft-blue);
   }
 
   .event-photo {
@@ -524,8 +522,6 @@ const baseStyles = String.raw`
     max-height: 360px;
     object-fit: contain;
     border-radius: var(--radius-md);
-    border: 1px solid rgba(216, 228, 242, 0.78);
-    background: var(--soft-blue);
   }
 
   .event-detail-title {
@@ -561,8 +557,6 @@ const baseStyles = String.raw`
     height: 22px;
     object-fit: contain;
     border-radius: var(--radius-pill);
-    border: 1px solid rgba(216, 228, 242, 0.86);
-    background: #ffffff;
   }
 
   .org-logo.large {
@@ -641,9 +635,7 @@ const baseStyles = String.raw`
     width: 100%;
     height: 135px;
     object-fit: cover;
-    border: 1px solid rgba(216, 228, 242, 0.78);
     border-radius: var(--radius-md);
-    background: var(--soft-blue);
   }
 
   .list-copy {
