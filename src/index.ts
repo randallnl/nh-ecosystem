@@ -454,6 +454,11 @@ const baseStyles = String.raw`
     gap: 22px;
   }
 
+  .content-page {
+    width: min(920px, 100%);
+    margin-inline: auto;
+  }
+
   .dashboard-hero {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(280px, 0.48fr);
@@ -1159,7 +1164,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
   const heroPreviews = renderHeroPreviews(posts.results ?? []);
 
   return layout(meta.title, String.raw`
-    <section class="dashboard">
+    <section class="dashboard content-page">
       <div class="dashboard-hero panel">
         <div>
           <p class="eyebrow">Member section</p>
@@ -1304,7 +1309,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
   const meta = sectionMeta(post.section);
 
   return layout(post.title, String.raw`
-    <section class="dashboard">
+    <section class="dashboard content-page">
       <article class="panel">
         <div class="panel-head">
           <h2>${escapeHtml(meta.title)}</h2>
