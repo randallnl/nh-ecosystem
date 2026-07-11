@@ -563,6 +563,31 @@ const baseStyles = String.raw`
     background: rgba(255, 255, 255, 0.64);
   }
 
+  .compact-list li.with-image {
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+  }
+
+  .list-thumb {
+    width: 100%;
+    height: 135px;
+    object-fit: cover;
+    border: 1px solid rgba(216, 228, 242, 0.78);
+    border-radius: var(--radius-md);
+    background: var(--soft-blue);
+  }
+
+  .list-copy {
+    display: grid;
+    gap: 8px;
+  }
+
+  .list-copy p {
+    margin: 0;
+  }
+
   .compact-list a,
   .tile a {
     color: var(--accent);
@@ -635,6 +660,14 @@ const baseStyles = String.raw`
     .bar div,
     .tile {
       min-height: auto;
+    }
+
+    .compact-list li.with-image {
+      grid-template-columns: 1fr;
+    }
+
+    .list-thumb {
+      height: 135px;
     }
   }
 `;
@@ -1003,14 +1036,16 @@ async function renderSectionPage(env: Env, user: User, section: string) {
   const postItems = posts.results?.length
     ? posts.results
         .map((post) => String.raw`
-          <li>
-            ${post.image_url ? `<img class="post-image" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
-            <strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong>
-            <p class="muted">${escapeHtml(excerpt(post.body, 180))}</p>
-            <div class="meta">
-              ${post.organization_name ? `<span class="badge">${escapeHtml(post.organization_name)}</span>` : `<span class="badge">Ecosystem-wide</span>`}
-              <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
-              <span class="badge">${Number(post.comment_count)} comments</span>
+          <li class="${post.image_url ? "with-image" : ""}">
+            ${post.image_url ? `<img class="list-thumb" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
+            <div class="list-copy">
+              <strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong>
+              <p class="muted">${escapeHtml(excerpt(post.body, 180))}</p>
+              <div class="meta">
+                ${post.organization_name ? `<span class="badge">${escapeHtml(post.organization_name)}</span>` : `<span class="badge">Ecosystem-wide</span>`}
+                <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
+                <span class="badge">${Number(post.comment_count)} comments</span>
+              </div>
             </div>
           </li>
         `)
