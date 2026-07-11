@@ -520,12 +520,34 @@ const baseStyles = String.raw`
 
   .event-photo {
     display: block;
-    width: min(680px, 100%);
+    width: 100%;
     max-height: 360px;
     object-fit: contain;
     border-radius: var(--radius-md);
     border: 1px solid rgba(216, 228, 242, 0.78);
     background: var(--soft-blue);
+  }
+
+  .event-detail-title {
+    max-width: 860px;
+    font-size: clamp(2.2rem, 5vw, 4.4rem);
+    line-height: 0.98;
+  }
+
+  .event-detail-body {
+    display: grid;
+    grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.15fr);
+    gap: 22px;
+    align-items: start;
+    margin-top: 18px;
+  }
+
+  .event-detail-copy {
+    min-width: 0;
+  }
+
+  .event-detail-copy .lede {
+    margin-top: 0;
   }
 
   .org-pill {
@@ -684,6 +706,10 @@ const baseStyles = String.raw`
     }
 
     .admin-columns {
+      grid-template-columns: 1fr;
+    }
+
+    .event-detail-body {
       grid-template-columns: 1fr;
     }
   }
@@ -1292,15 +1318,19 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
           <h2>${escapeHtml(meta.title)}</h2>
           <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
         </div>
-        <h1>${escapeHtml(post.title)}</h1>
-        ${post.image_url ? `<img class="event-photo" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
+        <h1 class="event-detail-title">${escapeHtml(post.title)}</h1>
         <div class="meta">
           ${post.organization_name ? renderOrganizationPill(post.organization_name, post.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
           <span class="badge">${escapeHtml(post.author_name || post.author_email)}</span>
           ${post.starts_at ? `<span class="badge">${escapeHtml(formatDate(post.starts_at))}</span>` : ""}
           ${post.location_name ? `<span class="badge">${escapeHtml(post.location_name)}</span>` : ""}
         </div>
-        <p class="post-body lede">${escapeHtml(post.body)}</p>
+        <div class="event-detail-body">
+          ${post.image_url ? `<img class="event-photo" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
+          <div class="event-detail-copy">
+            <p class="post-body lede">${escapeHtml(post.body)}</p>
+          </div>
+        </div>
         <div class="actions">
           <a class="button secondary" href="${escapeHtml(meta.path)}">Back to ${escapeHtml(meta.title)}</a>
           ${post.organization_slug ? `<a class="button secondary" href="/organizations/${escapeHtml(post.organization_slug)}">Organization profile</a>` : ""}
