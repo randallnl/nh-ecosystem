@@ -771,6 +771,19 @@ export default {
         return handleCreatePost(request, env, user);
       }
 
+      if (request.method === "GET" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/edit")) {
+        const user = requireUser(session.user);
+        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/edit", "")).split("/")[0];
+        return html(await renderEventEditPage(env, user, postId));
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/edit")) {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/edit", "")).split("/")[0];
+        return handleUpdateEvent(request, env, user, postId);
+      }
+
       if (request.method === "GET" && url.pathname.startsWith("/posts/")) {
         const user = requireUser(session.user);
         const postId = decodeURIComponent(url.pathname.replace("/posts/", "")).split("/")[0];
@@ -1161,7 +1174,7 @@ function renderPostForm(section: string, organizations: Array<{ id: string; name
 async function renderPostDetail(env: Env, user: User, postId: string) {
   const post = await env.DB.prepare(
     `SELECT p.id, p.section, p.title, p.body, p.visibility, p.status, p.created_at, p.organization_id,
-      e.image_url,
+      e.starts_at, e.ends_at, e.location_name, e.registration_url, e.external_url, e.image_url,
       o.name AS organization_name, o.slug AS organization_slug,
       u.name AS author_name, u.email AS author_email
      FROM posts p
@@ -1180,6 +1193,11 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
       status: string;
       created_at: string;
       organization_id: string | null;
+      starts_at: string | null;
+      ends_at: string | null;
+      location_name: string | null;
+      registration_url: string | null;
+      external_url: string | null;
       image_url: string | null;
       organization_name: string | null;
       organization_slug: string | null;
@@ -1192,6 +1210,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
   }
 
   await requireCanReadPost(env, user, post.organization_id, post.visibility);
+  const canEditEvent = post.section === "event" && await canManageEvent(env, user, post.organization_id);
 
   const comments = await env.DB.prepare(
     `SELECT c.id, c.body, c.created_at, u.name AS author_name, u.email AS author_email
@@ -1221,11 +1240,16 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
         <div class="meta">
           ${post.organization_name ? `<span class="badge">${escapeHtml(post.organization_name)}</span>` : `<span class="badge">Ecosystem-wide</span>`}
           <span class="badge">${escapeHtml(post.author_name || post.author_email)}</span>
+          ${post.starts_at ? `<span class="badge">${escapeHtml(formatDate(post.starts_at))}</span>` : ""}
+          ${post.location_name ? `<span class="badge">${escapeHtml(post.location_name)}</span>` : ""}
         </div>
         <p class="post-body lede">${escapeHtml(post.body)}</p>
         <div class="actions">
           <a class="button secondary" href="${escapeHtml(meta.path)}">Back to ${escapeHtml(meta.title)}</a>
           ${post.organization_slug ? `<a class="button secondary" href="/organizations/${escapeHtml(post.organization_slug)}">Organization profile</a>` : ""}
+          ${canEditEvent ? `<a class="button primary" href="/posts/${escapeHtml(post.id)}/edit">Edit event</a>` : ""}
+          ${post.registration_url ? `<a class="button secondary" href="${escapeHtml(post.registration_url)}">Event page</a>` : ""}
+          ${!post.registration_url && post.external_url ? `<a class="button secondary" href="${escapeHtml(post.external_url)}">Event page</a>` : ""}
         </div>
       </article>
 
@@ -1254,6 +1278,164 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
       </section>
     </section>
   `, user);
+}
+
+async function renderEventEditPage(env: Env, user: User, postId: string) {
+  const post = await env.DB.prepare(
+    `SELECT p.id, p.title, p.body, p.section, p.status, p.organization_id,
+      e.starts_at, e.ends_at, e.location_name, e.registration_url, e.external_url, e.source_url, e.image_url,
+      o.name AS organization_name, o.slug AS organization_slug
+     FROM posts p
+     LEFT JOIN events e ON e.post_id = p.id
+     LEFT JOIN organizations o ON o.id = p.organization_id
+     WHERE p.id = ?`
+  )
+    .bind(postId)
+    .first<{
+      id: string;
+      title: string;
+      body: string;
+      section: string;
+      status: string;
+      organization_id: string | null;
+      starts_at: string | null;
+      ends_at: string | null;
+      location_name: string | null;
+      registration_url: string | null;
+      external_url: string | null;
+      source_url: string | null;
+      image_url: string | null;
+      organization_name: string | null;
+      organization_slug: string | null;
+    }>();
+
+  if (!post || post.status !== "published" || post.section !== "event") {
+    throw new HttpError(404, "Event not found", "That event does not exist or is not editable.");
+  }
+
+  await requireCanManageEvent(env, user, post.organization_id);
+
+  return layout(`Edit ${post.title}`, String.raw`
+    <section class="dashboard">
+      <div class="dashboard-hero panel">
+        <div>
+          <p class="eyebrow">Event editor</p>
+          <h1>${escapeHtml(post.title)}</h1>
+          <p class="lede">Update event details, links, and display information.</p>
+          <div class="status">
+            ${post.organization_name ? `<span>${escapeHtml(post.organization_name)}</span>` : `<span>Ecosystem-wide</span>`}
+            ${post.starts_at ? `<span>${escapeHtml(formatDate(post.starts_at))}</span>` : ""}
+          </div>
+        </div>
+        <div class="stack">
+          <a class="button secondary" href="/posts/${escapeHtml(post.id)}">Back to event</a>
+          ${post.organization_slug ? `<a class="button secondary" href="/organizations/${escapeHtml(post.organization_slug)}">Organization profile</a>` : ""}
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Event details</h2>
+          <span class="badge">Editable</span>
+        </div>
+        <form method="post" action="/posts/${escapeHtml(post.id)}/edit">
+          <label>
+            Title
+            <input name="title" type="text" value="${escapeHtml(post.title)}" required />
+          </label>
+          <label>
+            Description
+            <textarea name="body" required>${escapeHtml(post.body)}</textarea>
+          </label>
+          <label>
+            Starts at
+            <input name="starts_at" type="datetime-local" value="${escapeHtml(toDateTimeLocal(post.starts_at))}" required />
+          </label>
+          <label>
+            Ends at
+            <input name="ends_at" type="datetime-local" value="${escapeHtml(toDateTimeLocal(post.ends_at))}" />
+          </label>
+          <label>
+            Location
+            <input name="location_name" type="text" value="${escapeHtml(post.location_name || "")}" />
+          </label>
+          <label>
+            Event Page URL
+            <input name="registration_url" type="url" value="${escapeHtml(post.registration_url || post.external_url || "")}" />
+          </label>
+          <label>
+            Source URL
+            <input name="source_url" type="url" value="${escapeHtml(post.source_url || "")}" />
+          </label>
+          <label>
+            Photo URL
+            <input name="image_url" type="url" value="${escapeHtml(post.image_url || "")}" />
+          </label>
+          <button class="primary" type="submit">Update event</button>
+        </form>
+      </section>
+    </section>
+  `, user);
+}
+
+async function handleUpdateEvent(request: Request, env: Env, user: User, postId: string) {
+  const post = await env.DB.prepare(
+    "SELECT id, section, status, organization_id FROM posts WHERE id = ?"
+  )
+    .bind(postId)
+    .first<{ id: string; section: string; status: string; organization_id: string | null }>();
+
+  if (!post || post.status !== "published" || post.section !== "event") {
+    throw new HttpError(404, "Event not found", "That event does not exist or is not editable.");
+  }
+
+  await requireCanManageEvent(env, user, post.organization_id);
+
+  const form = await request.formData();
+  const title = cleanText(form.get("title"), 220);
+  const body = cleanText(form.get("body"), 6000);
+  const startsAt = cleanDateTimeLocal(form.get("starts_at"));
+  const endsAt = cleanOptionalDateTimeLocal(form.get("ends_at"));
+  const locationName = cleanText(form.get("location_name"), 500);
+  const registrationUrl = normalizeOptionalUrl(form.get("registration_url"));
+  const sourceUrl = normalizeOptionalUrl(form.get("source_url"));
+  const imageUrl = normalizeOptionalUrl(form.get("image_url"));
+
+  if (!title || !body || !startsAt) {
+    throw new HttpError(400, "Event details required", "Enter a title, description, and start date/time.");
+  }
+
+  if (endsAt && endsAt < startsAt) {
+    throw new HttpError(400, "Event dates invalid", "The end date/time must be after the start date/time.");
+  }
+
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE posts SET title = ?, body = ?, updated_at = ? WHERE id = ?"
+    ).bind(title, body, new Date().toISOString(), post.id),
+    env.DB.prepare(
+      `INSERT INTO events (post_id, starts_at, ends_at, location_name, registration_url, source_url, external_url, image_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(post_id) DO UPDATE SET starts_at = excluded.starts_at, ends_at = excluded.ends_at,
+         location_name = excluded.location_name, registration_url = excluded.registration_url,
+         source_url = excluded.source_url, external_url = excluded.external_url, image_url = excluded.image_url`
+    ).bind(
+      post.id,
+      startsAt,
+      endsAt || null,
+      locationName || null,
+      registrationUrl || null,
+      sourceUrl || null,
+      registrationUrl || null,
+      imageUrl || null
+    ),
+  ]);
+
+  await writeAudit(env, user.id, "event.updated", "post", post.id, {
+    organization_id: post.organization_id || null,
+  });
+
+  return redirect(`/posts/${post.id}`);
 }
 
 async function handleCreatePost(request: Request, env: Env, user: User) {
@@ -2293,6 +2475,28 @@ async function requireCanPostForOrganization(env: Env, user: User, organizationI
   throw new HttpError(403, "Contributor access required", "You need contributor or organization admin access to post for that organization.");
 }
 
+async function canManageEvent(env: Env, user: User, organizationId: string | null) {
+  if (user.site_role === "site_admin") {
+    return true;
+  }
+  if (!organizationId) {
+    return false;
+  }
+  const membership = await env.DB.prepare(
+    "SELECT role FROM organization_memberships WHERE organization_id = ? AND user_id = ? AND role = 'org_admin'"
+  )
+    .bind(organizationId, user.id)
+    .first<{ role: string }>();
+  return Boolean(membership);
+}
+
+async function requireCanManageEvent(env: Env, user: User, organizationId: string | null) {
+  if (await canManageEvent(env, user, organizationId)) {
+    return;
+  }
+  throw new HttpError(403, "Event editor access required", "Only site admins and organization admins can edit this event.");
+}
+
 async function requireCanReadPost(env: Env, user: User, organizationId: string | null, visibility: string) {
   if (visibility !== "organization" || user.site_role === "site_admin" || !organizationId) {
     return;
@@ -2487,6 +2691,24 @@ function cleanSiteRole(value: FormDataEntryValue | null) {
 
 function cleanUserStatus(value: FormDataEntryValue | null) {
   return value === "invited" || value === "active" || value === "suspended" ? value : "";
+}
+
+function cleanDateTimeLocal(value: FormDataEntryValue | null) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(trimmed)) {
+    return "";
+  }
+  return `${trimmed}:00`;
+}
+
+function cleanOptionalDateTimeLocal(value: FormDataEntryValue | null) {
+  if (typeof value !== "string" || !value.trim()) {
+    return "";
+  }
+  return cleanDateTimeLocal(value);
 }
 
 function cleanEventParser(value: FormDataEntryValue | null) {
@@ -2719,6 +2941,14 @@ function formatDate(value: string) {
     day: "numeric",
     year: "numeric",
   }).format(new Date(value));
+}
+
+function toDateTimeLocal(value: string | null) {
+  if (!value) {
+    return "";
+  }
+  const match = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/);
+  return match?.[1] ?? "";
 }
 
 function excerpt(value: string, max: number) {
