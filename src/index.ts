@@ -463,11 +463,19 @@ const baseStyles = String.raw`
 
   .hero-preview {
     display: grid;
-    gap: 10px;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
     align-self: stretch;
   }
 
-  .hero-preview-item,
+  .hero-preview-label {
+    grid-column: 1 / -1;
+    color: var(--muted);
+    font-size: 0.84rem;
+    font-weight: 850;
+  }
+
   .post-preview {
     display: grid;
     gap: 8px;
@@ -477,14 +485,12 @@ const baseStyles = String.raw`
     background: rgba(255, 255, 255, 0.66);
   }
 
-  .hero-preview-item a,
   .post-preview a {
     color: var(--accent);
     font-weight: 850;
     text-decoration: none;
   }
 
-  .hero-preview-item p,
   .post-preview p {
     margin: 0;
   }
@@ -600,6 +606,10 @@ const baseStyles = String.raw`
     }
 
     .dashboard-hero {
+      grid-template-columns: 1fr;
+    }
+
+    .hero-preview {
       grid-template-columns: 1fr;
     }
 
@@ -926,11 +936,11 @@ async function renderApp(env: Env, user: User) {
           <h1>Member dashboard</h1>
           <p class="lede">This is the protected app area. Future legislation notes, events, projects, comments, and organization tools will live behind this authorization boundary.</p>
         </div>
-        <div class="hero-preview">
-          ${heroPreviews}
+        <div class="stack">
           ${user.site_role === "site_admin" ? `<a class="button secondary" href="/admin">Admin tools</a>` : ""}
           <form method="post" action="/logout"><button class="danger" type="submit">Sign out</button></form>
         </div>
+        ${heroPreviews}
       </div>
 
       <section class="dashboard-grid" aria-label="Protected sections">
@@ -1018,8 +1028,8 @@ async function renderSectionPage(env: Env, user: User, section: string) {
         </div>
         <div class="stack">
           <a class="button secondary" href="/app">Dashboard</a>
-          <div class="hero-preview">${heroPreviews}</div>
         </div>
+        ${heroPreviews}
       </div>
 
       <section class="section-feed">
@@ -1053,8 +1063,8 @@ function renderHeroPreviews(
     .sort((a, b) => Number(b.comment_count ?? 0) - Number(a.comment_count ?? 0))
     .slice(0, 3);
   return String.raw`
-    <div class="hero-preview-item">
-      <strong>Active threads</strong>
+    <div class="hero-preview">
+      <strong class="hero-preview-label">Active threads</strong>
       ${activePosts
         .map((post) => String.raw`
           <div class="post-preview">
@@ -2185,7 +2195,7 @@ function html(body: string, status = 200, headers: HeadersInit = {}) {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      "content-security-policy": "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
       "x-content-type-options": "nosniff",
       "referrer-policy": "strict-origin-when-cross-origin",
       ...headers,
