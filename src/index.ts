@@ -744,6 +744,21 @@ export default {
         return handleAdminInvite(request, env, user);
       }
 
+      if (request.method === "GET" && url.pathname.startsWith("/admin/users/")) {
+        const user = requireUser(session.user);
+        requireSiteAdmin(user);
+        const userId = decodeURIComponent(url.pathname.replace("/admin/users/", "")).split("/")[0];
+        return html(await renderAdminUserProfile(env, user, userId));
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/admin/users/")) {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        requireSiteAdmin(user);
+        const userId = decodeURIComponent(url.pathname.replace("/admin/users/", "")).split("/")[0];
+        return handleUpdateUserProfile(request, env, user, userId);
+      }
+
       const section = sectionFromPath(url.pathname);
       if (request.method === "GET" && section) {
         const user = requireUser(session.user);
@@ -1313,14 +1328,14 @@ async function renderAdmin(env: Env, user: User) {
      ORDER BY name`
   ).all<{ id: string; name: string; slug: string; contact_email: string | null; status: string; event_source_url: string | null; event_scraping_enabled: number }>();
   const recentUsers = await env.DB.prepare(
-    `SELECT u.email, u.name, u.site_role, u.status, GROUP_CONCAT(o.name || ' (' || m.role || ')', ', ') AS organizations
+    `SELECT u.id, u.email, u.name, u.site_role, u.status, GROUP_CONCAT(o.name || ' (' || m.role || ')', ', ') AS organizations
      FROM users u
      LEFT JOIN organization_memberships m ON m.user_id = u.id
      LEFT JOIN organizations o ON o.id = m.organization_id
      GROUP BY u.id
      ORDER BY u.created_at DESC
      LIMIT 8`
-  ).all<{ email: string; name: string | null; site_role: string; status: string; organizations: string | null }>();
+  ).all<{ id: string; email: string; name: string | null; site_role: string; status: string; organizations: string | null }>();
 
   const users = Number((stats[0].results?.[0] as { count?: number } | undefined)?.count ?? 0);
   const invites = Number((stats[1].results?.[0] as { count?: number } | undefined)?.count ?? 0);
@@ -1335,7 +1350,7 @@ async function renderAdmin(env: Env, user: User) {
     : `<li><strong>No organizations yet</strong><br /><span class="muted">Create the first member organization with the form.</span></li>`;
   const userItems = recentUsers.results?.length
     ? recentUsers.results
-        .map((member) => `<li><strong>${escapeHtml(member.name || member.email)}</strong><br /><span class="muted">${escapeHtml(member.email)} · ${escapeHtml(member.site_role)} · ${escapeHtml(member.status)}${member.organizations ? ` · ${escapeHtml(member.organizations)}` : ""}</span></li>`)
+        .map((member) => `<li><strong><a href="/admin/users/${escapeHtml(member.id)}">${escapeHtml(member.name || member.email)}</a></strong><br /><span class="muted">${escapeHtml(member.email)} · ${escapeHtml(member.site_role)} · ${escapeHtml(member.status)}${member.organizations ? ` · ${escapeHtml(member.organizations)}` : ""}</span></li>`)
         .join("")
     : `<li><strong>No members yet</strong><br /><span class="muted">Invited members will appear here.</span></li>`;
 
@@ -1450,6 +1465,159 @@ async function renderAdmin(env: Env, user: User) {
       </section>
     </section>
   `, user);
+}
+
+async function renderAdminUserProfile(env: Env, admin: User, userId: string) {
+  const member = await env.DB.prepare(
+    `SELECT id, email, name, site_role, status, created_at, updated_at, last_seen_at
+     FROM users
+     WHERE id = ?`
+  )
+    .bind(userId)
+    .first<{
+      id: string;
+      email: string;
+      name: string | null;
+      site_role: "member" | "site_admin";
+      status: "invited" | "active" | "suspended";
+      created_at: string;
+      updated_at: string;
+      last_seen_at: string | null;
+    }>();
+
+  if (!member) {
+    throw new HttpError(404, "Member not found", "That member profile does not exist.");
+  }
+
+  const memberships = await env.DB.prepare(
+    `SELECT o.name, o.slug, m.role
+     FROM organization_memberships m
+     JOIN organizations o ON o.id = m.organization_id
+     WHERE m.user_id = ?
+     ORDER BY o.name`
+  )
+    .bind(member.id)
+    .all<{ name: string; slug: string; role: string }>();
+  const membershipItems = memberships.results?.length
+    ? memberships.results
+        .map((membership) => `<li><strong><a href="/organizations/${escapeHtml(membership.slug)}">${escapeHtml(membership.name)}</a></strong><br /><span class="muted">${escapeHtml(formatRole(membership.role))}</span></li>`)
+        .join("")
+    : `<li><strong>No organizations linked</strong><br /><span class="muted">Invite this member to an organization from the admin tools page.</span></li>`;
+
+  return layout("Edit member", String.raw`
+    <section class="dashboard">
+      <div class="dashboard-hero panel">
+        <div>
+          <p class="eyebrow">Member profile</p>
+          <h1>${escapeHtml(member.name || member.email)}</h1>
+          <p class="lede">Update account details, site access, and profile information for this member.</p>
+          <div class="status">
+            <span>${escapeHtml(member.email)}</span>
+            <span>${escapeHtml(member.site_role)}</span>
+            <span>${escapeHtml(member.status)}</span>
+          </div>
+        </div>
+        <div class="stack">
+          <a class="button secondary" href="/admin">Admin tools</a>
+        </div>
+      </div>
+
+      <section class="admin-columns">
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Profile details</h2>
+            <span class="badge">${member.id === admin.id ? "Your account" : "Editable"}</span>
+          </div>
+          <form method="post" action="/admin/users/${escapeHtml(member.id)}">
+            <label>
+              Name
+              <input name="name" type="text" value="${escapeHtml(member.name || "")}" />
+            </label>
+            <label>
+              Email
+              <input name="email" type="email" value="${escapeHtml(member.email)}" required />
+            </label>
+            <label>
+              Site role
+              <select name="site_role">
+                <option value="member" ${member.site_role === "member" ? "selected" : ""}>Member</option>
+                <option value="site_admin" ${member.site_role === "site_admin" ? "selected" : ""}>Site admin</option>
+              </select>
+            </label>
+            <label>
+              Account status
+              <select name="status">
+                <option value="invited" ${member.status === "invited" ? "selected" : ""}>Invited</option>
+                <option value="active" ${member.status === "active" ? "selected" : ""}>Active</option>
+                <option value="suspended" ${member.status === "suspended" ? "selected" : ""}>Suspended</option>
+              </select>
+            </label>
+            <button class="primary" type="submit">Update profile</button>
+          </form>
+        </aside>
+
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Organizations</h2>
+            <span class="badge">${memberships.results?.length ?? 0} linked</span>
+          </div>
+          <ul class="compact-list">${membershipItems}</ul>
+          <div class="notice">
+            Organization roles are currently updated by sending an admin invite for the same member and organization.
+          </div>
+          <div class="status">
+            <span>Created ${escapeHtml(formatDate(member.created_at))}</span>
+            <span>Updated ${escapeHtml(formatDate(member.updated_at))}</span>
+            ${member.last_seen_at ? `<span>Last seen ${escapeHtml(formatDate(member.last_seen_at))}</span>` : ""}
+          </div>
+        </aside>
+      </section>
+    </section>
+  `, admin);
+}
+
+async function handleUpdateUserProfile(request: Request, env: Env, admin: User, userId: string) {
+  const existing = await env.DB.prepare("SELECT id, email, site_role, status FROM users WHERE id = ?")
+    .bind(userId)
+    .first<{ id: string; email: string; site_role: "member" | "site_admin"; status: "invited" | "active" | "suspended" }>();
+  if (!existing) {
+    throw new HttpError(404, "Member not found", "That member profile does not exist.");
+  }
+
+  const form = await request.formData();
+  const name = cleanText(form.get("name"), 120);
+  const email = normalizeEmail(form.get("email"));
+  const siteRole = cleanSiteRole(form.get("site_role"));
+  const status = cleanUserStatus(form.get("status"));
+
+  if (!email || !siteRole || !status) {
+    throw new HttpError(400, "Profile details required", "Enter a valid email, site role, and account status.");
+  }
+
+  if (existing.id === admin.id && (siteRole !== "site_admin" || status !== "active")) {
+    throw new HttpError(400, "Cannot lock yourself out", "Keep your own account active and assigned as a site admin.");
+  }
+
+  try {
+    await env.DB.prepare(
+      `UPDATE users
+       SET email = ?, name = ?, site_role = ?, status = ?, updated_at = ?
+       WHERE id = ?`
+    )
+      .bind(email, name || null, siteRole, status, new Date().toISOString(), existing.id)
+      .run();
+  } catch {
+    throw new HttpError(400, "Email already in use", "Choose a different email address for this member.");
+  }
+
+  await writeAudit(env, admin.id, "member.profile_updated", "user", existing.id, {
+    previous_email: existing.email,
+    email,
+    site_role: siteRole,
+    status,
+  });
+
+  return redirect(`/admin/users/${existing.id}`);
 }
 
 async function renderOrganizationProfile(env: Env, user: User, slug: string) {
@@ -2311,6 +2479,14 @@ function cleanRole(value: FormDataEntryValue | null) {
     return value;
   }
   return "viewer";
+}
+
+function cleanSiteRole(value: FormDataEntryValue | null) {
+  return value === "member" || value === "site_admin" ? value : "";
+}
+
+function cleanUserStatus(value: FormDataEntryValue | null) {
+  return value === "invited" || value === "active" || value === "suspended" ? value : "";
 }
 
 function cleanEventParser(value: FormDataEntryValue | null) {
