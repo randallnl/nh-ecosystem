@@ -35,7 +35,7 @@ blog.
 
 The event endpoint accepts the scraper's existing normalized fields:
 `partner`, `title`, `start_date`, `end_date`, `start_time`, `end_time`,
-`location`, `description`, `url`, `source_url`, `kind`, and `scraped_at`.
+`location`, `description`, `image_url`, `url`, `source_url`, `kind`, and `scraped_at`.
 Only records with `kind: "event"` (or no kind), a known enabled partner, a
 title, and an ISO `YYYY-MM-DD` start date are imported. A request is limited to
 500 records.

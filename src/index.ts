@@ -435,6 +435,18 @@ const baseStyles = String.raw`
     font-weight: 800;
   }
 
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   .dashboard {
     display: grid;
     align-content: start;
@@ -442,16 +454,81 @@ const baseStyles = String.raw`
   }
 
   .dashboard-hero {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 0.48fr);
     gap: 24px;
     padding: 26px;
     border-radius: var(--radius-xl);
   }
 
+  .hero-preview {
+    display: grid;
+    gap: 10px;
+    align-self: stretch;
+  }
+
+  .hero-preview-item,
+  .post-preview {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid rgba(216, 228, 242, 0.74);
+    border-radius: var(--radius-lg);
+    background: rgba(255, 255, 255, 0.66);
+  }
+
+  .hero-preview-item a,
+  .post-preview a {
+    color: var(--accent);
+    font-weight: 850;
+    text-decoration: none;
+  }
+
+  .hero-preview-item p,
+  .post-preview p {
+    margin: 0;
+  }
+
+  .post-image {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(216, 228, 242, 0.78);
+    background: var(--soft-blue);
+  }
+
   .dashboard-grid {
     grid-template-columns: repeat(3, 1fr);
+  }
+
+  .section-feed {
+    display: grid;
+    gap: 18px;
+  }
+
+  .composer-panel {
+    padding: 18px;
+  }
+
+  .composer {
+    margin-top: 0;
+  }
+
+  .composer input[name="title"] {
+    min-height: 56px;
+    border-radius: var(--radius-pill);
+    padding-inline: 18px;
+    font-weight: 750;
+  }
+
+  .composer-extra {
+    display: none;
+    gap: 14px;
+  }
+
+  .composer:focus-within .composer-extra {
+    display: grid;
   }
 
   .stack {
@@ -523,7 +600,7 @@ const baseStyles = String.raw`
     }
 
     .dashboard-hero {
-      display: grid;
+      grid-template-columns: 1fr;
     }
 
     .admin-columns {
@@ -807,13 +884,14 @@ async function renderApp(env: Env, user: User) {
      GROUP BY section`
   ).all<{ section: string; count: number }>();
   const recentPosts = await env.DB.prepare(
-    `SELECT p.id, p.section, p.title, p.created_at, o.name AS organization_name
+    `SELECT p.id, p.section, p.title, p.body, p.created_at, o.name AS organization_name,
+      (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'published') AS comment_count
      FROM posts p
      LEFT JOIN organizations o ON o.id = p.organization_id
      WHERE p.status = 'published'
-     ORDER BY p.created_at DESC
+     ORDER BY comment_count DESC, p.created_at DESC
      LIMIT 6`
-  ).all<{ id: string; section: string; title: string; created_at: string; organization_name: string | null }>();
+  ).all<{ id: string; section: string; title: string; body: string; created_at: string; organization_name: string | null; comment_count: number }>();
 
   const countBySection = new Map(postCounts.results?.map((row) => [row.section, row.count]) ?? []);
   const orgCards = memberships.results?.length
@@ -838,6 +916,7 @@ async function renderApp(env: Env, user: User) {
         .map((post) => `<li><strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong><br /><span class="muted">${escapeHtml(sectionLabel(post.section))}${post.organization_name ? ` · ${escapeHtml(post.organization_name)}` : ""} · ${escapeHtml(formatDate(post.created_at))}</span></li>`)
         .join("")
     : `<li><strong>No posts yet</strong><br /><span class="muted">Create the first legislation note, event, project, or update from a section page.</span></li>`;
+  const heroPreviews = renderHeroPreviews(recentPosts.results ?? []);
 
   return layout("Member dashboard", String.raw`
     <section class="dashboard">
@@ -847,7 +926,8 @@ async function renderApp(env: Env, user: User) {
           <h1>Member dashboard</h1>
           <p class="lede">This is the protected app area. Future legislation notes, events, projects, comments, and organization tools will live behind this authorization boundary.</p>
         </div>
-        <div class="stack">
+        <div class="hero-preview">
+          ${heroPreviews}
           ${user.site_role === "site_admin" ? `<a class="button secondary" href="/admin">Admin tools</a>` : ""}
           <form method="post" action="/logout"><button class="danger" type="submit">Sign out</button></form>
         </div>
@@ -884,9 +964,11 @@ async function renderSectionPage(env: Env, user: User, section: string) {
   const [posts, writableOrganizations] = await Promise.all([
     env.DB.prepare(
       `SELECT p.id, p.title, p.body, p.created_at, p.organization_id, o.name AS organization_name, o.slug AS organization_slug, u.name AS author_name, u.email AS author_email,
+        e.image_url,
         (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'published') AS comment_count
        FROM posts p
        LEFT JOIN organizations o ON o.id = p.organization_id
+       LEFT JOIN events e ON e.post_id = p.id
        JOIN users u ON u.id = p.author_user_id
        WHERE p.section = ? AND p.status = 'published'
        ORDER BY p.created_at DESC
@@ -901,6 +983,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
       organization_slug: string | null;
       author_name: string | null;
       author_email: string;
+      image_url: string | null;
       comment_count: number;
     }>(),
     getWritableOrganizations(env, user),
@@ -911,6 +994,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
     ? posts.results
         .map((post) => String.raw`
           <li>
+            ${post.image_url ? `<img class="post-image" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
             <strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong>
             <p class="muted">${escapeHtml(excerpt(post.body, 180))}</p>
             <div class="meta">
@@ -922,6 +1006,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
         `)
         .join("")
     : `<li><strong>No ${escapeHtml(meta.pluralLower)} yet</strong><br /><span class="muted">When members publish here, the latest posts will appear in this section.</span></li>`;
+  const heroPreviews = renderHeroPreviews(posts.results ?? []);
 
   return layout(meta.title, String.raw`
     <section class="dashboard">
@@ -933,10 +1018,19 @@ async function renderSectionPage(env: Env, user: User, section: string) {
         </div>
         <div class="stack">
           <a class="button secondary" href="/app">Dashboard</a>
+          <div class="hero-preview">${heroPreviews}</div>
         </div>
       </div>
 
-      <section class="admin-columns">
+      <section class="section-feed">
+        <aside class="panel composer-panel">
+          <div class="panel-head">
+            <h2>Create ${escapeHtml(meta.singularLower)}</h2>
+            <span class="badge">${canCreate ? "Available" : "Contributor role needed"}</span>
+          </div>
+          ${canCreate ? renderPostForm(section, writableOrganizations, user) : `<p class="muted">Ask an organization admin or site admin to give you contributor access before posting.</p>`}
+        </aside>
+
         <aside class="panel">
           <div class="panel-head">
             <h2>Recent ${escapeHtml(meta.pluralLower)}</h2>
@@ -944,17 +1038,34 @@ async function renderSectionPage(env: Env, user: User, section: string) {
           </div>
           <ul class="compact-list">${postItems}</ul>
         </aside>
-
-        <aside class="panel">
-          <div class="panel-head">
-            <h2>Create ${escapeHtml(meta.singularLower)}</h2>
-            <span class="badge">${canCreate ? "Available" : "Contributor role needed"}</span>
-          </div>
-          ${canCreate ? renderPostForm(section, writableOrganizations, user) : `<p class="muted">Ask an organization admin or site admin to give you contributor access before posting.</p>`}
-        </aside>
       </section>
     </section>
   `, user);
+}
+
+function renderHeroPreviews(
+  posts: Array<{ id: string; title: string; body?: string; section?: string; organization_name?: string | null; comment_count?: number; image_url?: string | null }>
+) {
+  if (!posts.length) {
+    return "";
+  }
+  const activePosts = [...posts]
+    .sort((a, b) => Number(b.comment_count ?? 0) - Number(a.comment_count ?? 0))
+    .slice(0, 3);
+  return String.raw`
+    <div class="hero-preview-item">
+      <strong>Active threads</strong>
+      ${activePosts
+        .map((post) => String.raw`
+          <div class="post-preview">
+            ${post.image_url ? `<img class="post-image" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
+            <a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a>
+            <p class="muted">${post.organization_name ? `${escapeHtml(post.organization_name)} · ` : ""}${Number(post.comment_count ?? 0)} comments${post.section ? ` · ${escapeHtml(sectionLabel(post.section))}` : ""}</p>
+          </div>
+        `)
+        .join("")}
+    </div>
+  `;
 }
 
 function renderPostForm(section: string, organizations: Array<{ id: string; name: string }>, user: User) {
@@ -964,23 +1075,25 @@ function renderPostForm(section: string, organizations: Array<{ id: string; name
   ].join("");
 
   return String.raw`
-    <form method="post" action="/posts">
+    <form class="composer" method="post" action="/posts">
       <input name="section" type="hidden" value="${escapeHtml(section)}" />
       <label>
-        Organization
-        <select name="organization_id" ${organizationOptions ? "" : "disabled"}>
-          ${organizationOptions}
-        </select>
+        <span class="sr-only">Title</span>
+        <input name="title" type="text" required placeholder="Create ${escapeHtml(sectionMeta(section).singularLower)}" />
       </label>
-      <label>
-        Title
-        <input name="title" type="text" required />
-      </label>
-      <label>
-        Body
-        <textarea name="body" required placeholder="Share the context, ask, update, or next step."></textarea>
-      </label>
-      <button class="primary" type="submit">Publish</button>
+      <div class="composer-extra">
+        <label>
+          Organization
+          <select name="organization_id" ${organizationOptions ? "" : "disabled"}>
+            ${organizationOptions}
+          </select>
+        </label>
+        <label>
+          Body
+          <textarea name="body" required placeholder="Share the context, ask, update, or next step."></textarea>
+        </label>
+        <button class="primary" type="submit">Publish</button>
+      </div>
     </form>
   `;
 }
@@ -988,9 +1101,11 @@ function renderPostForm(section: string, organizations: Array<{ id: string; name
 async function renderPostDetail(env: Env, user: User, postId: string) {
   const post = await env.DB.prepare(
     `SELECT p.id, p.section, p.title, p.body, p.visibility, p.status, p.created_at, p.organization_id,
+      e.image_url,
       o.name AS organization_name, o.slug AS organization_slug,
       u.name AS author_name, u.email AS author_email
      FROM posts p
+     LEFT JOIN events e ON e.post_id = p.id
      LEFT JOIN organizations o ON o.id = p.organization_id
      JOIN users u ON u.id = p.author_user_id
      WHERE p.id = ?`
@@ -1005,6 +1120,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
       status: string;
       created_at: string;
       organization_id: string | null;
+      image_url: string | null;
       organization_name: string | null;
       organization_slug: string | null;
       author_name: string | null;
@@ -1041,6 +1157,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
           <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
         </div>
         <h1>${escapeHtml(post.title)}</h1>
+        ${post.image_url ? `<img class="post-image" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
         <div class="meta">
           ${post.organization_name ? `<span class="badge">${escapeHtml(post.organization_name)}</span>` : `<span class="badge">Ecosystem-wide</span>`}
           <span class="badge">${escapeHtml(post.author_name || post.author_email)}</span>
@@ -2205,6 +2322,7 @@ type ScrapedEvent = {
   description?: unknown;
   url?: unknown;
   source_url?: unknown;
+  image_url?: unknown;
   kind?: unknown;
   scraped_at?: unknown;
 };
@@ -2263,6 +2381,7 @@ async function handleScraperEvents(request: Request, env: Env) {
     const text = (value: unknown, max: number) => typeof value === "string" ? value.trim().slice(0, max) : "";
     const sourceUrl = text(raw.source_url, 2000);
     const externalUrl = text(raw.url, 2000);
+    const imageUrl = normalizeScrapedUrl(text(raw.image_url, 2000));
     const startTime = text(raw.start_time, 12);
     const endDate = text(raw.end_date, 10);
     const endTime = text(raw.end_time, 12);
@@ -2284,12 +2403,13 @@ async function handleScraperEvents(request: Request, env: Env) {
          ON CONFLICT(id) DO UPDATE SET title = excluded.title, body = excluded.body, updated_at = CURRENT_TIMESTAMP`
       ).bind(postId, organization.id, title, body),
       env.DB.prepare(
-        `INSERT INTO events (post_id, starts_at, ends_at, location_name, registration_url, source_url, external_url, external_id, scraped_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO events (post_id, starts_at, ends_at, location_name, registration_url, source_url, external_url, external_id, scraped_at, image_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(post_id) DO UPDATE SET starts_at = excluded.starts_at, ends_at = excluded.ends_at,
            location_name = excluded.location_name, registration_url = excluded.registration_url,
-           source_url = excluded.source_url, external_url = excluded.external_url, scraped_at = excluded.scraped_at`
-      ).bind(postId, startsAt, endsAt, location || null, externalUrl || null, sourceUrl || null, externalUrl || null, externalId, scrapedAt),
+           source_url = excluded.source_url, external_url = excluded.external_url,
+           scraped_at = excluded.scraped_at, image_url = excluded.image_url`
+      ).bind(postId, startsAt, endsAt, location || null, externalUrl || null, sourceUrl || null, externalUrl || null, externalId, scrapedAt, imageUrl || null),
     ]);
     imported++;
   }
@@ -2307,6 +2427,21 @@ function normalizeScrapedTime(value: string) {
   if (meridiem === "AM" && hour === 12) hour = 0;
   if (meridiem === "PM" && hour !== 12) hour += 12;
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeScrapedUrl(value: string) {
+  let normalized = value.trim();
+  for (let index = 0; index < 3; index++) {
+    const next = normalized
+      .replace(/&amp;/gi, "&")
+      .replace(/&#38;/g, "&")
+      .replace(/&#x26;/gi, "&");
+    if (next === normalized) {
+      break;
+    }
+    normalized = next;
+  }
+  return normalized;
 }
 
 function sectionFromPath(pathname: string) {
