@@ -1,5 +1,6 @@
 interface Env {
   DB: D1Database;
+  ASSETS: R2Bucket;
   SCRAPER_API_TOKEN?: string;
   EMAIL: {
     send(message: {
@@ -517,6 +518,37 @@ const baseStyles = String.raw`
     background: var(--soft-blue);
   }
 
+  .event-photo {
+    display: block;
+    width: min(680px, 100%);
+    max-height: 360px;
+    object-fit: contain;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(216, 228, 242, 0.78);
+    background: var(--soft-blue);
+  }
+
+  .org-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .org-logo {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+    border-radius: var(--radius-pill);
+    border: 1px solid rgba(216, 228, 242, 0.86);
+    background: #ffffff;
+  }
+
+  .org-logo.large {
+    width: 64px;
+    height: 64px;
+    border-radius: var(--radius-lg);
+  }
+
   .dashboard-grid {
     grid-template-columns: repeat(3, 1fr);
   }
@@ -743,6 +775,11 @@ export default {
         return handleLogout(session, env);
       }
 
+      if (request.method === "GET" && url.pathname.startsWith("/media/org-logos/")) {
+        requireUser(session.user);
+        return handleMediaObject(request, env);
+      }
+
       if (request.method === "POST" && url.pathname === "/admin/organizations") {
         assertSameOrigin(request);
         const user = requireUser(session.user);
@@ -795,6 +832,13 @@ export default {
         const user = requireUser(session.user);
         const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/edit", "")).split("/")[0];
         return handleUpdateEvent(request, env, user, postId);
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/delete")) {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/delete", "")).split("/")[0];
+        return handleRemoveEvent(env, user, postId);
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/posts/")) {
@@ -952,14 +996,14 @@ function renderInviteRequest() {
 
 async function renderApp(env: Env, user: User) {
   const memberships = await env.DB.prepare(
-    `SELECT o.name, o.slug, o.summary, o.contact_email, o.website_url, m.role
+    `SELECT o.name, o.slug, o.summary, o.contact_email, o.website_url, o.logo_object_key, m.role
      FROM organization_memberships m
      JOIN organizations o ON o.id = m.organization_id
      WHERE m.user_id = ?
      ORDER BY o.name`
   )
     .bind(user.id)
-    .all<{ name: string; slug: string; summary: string | null; contact_email: string | null; website_url: string | null; role: string }>();
+    .all<{ name: string; slug: string; summary: string | null; contact_email: string | null; website_url: string | null; logo_object_key: string | null; role: string }>();
 
   const postCounts = await env.DB.prepare(
     `SELECT section, COUNT(*) AS count
@@ -968,21 +1012,21 @@ async function renderApp(env: Env, user: User) {
      GROUP BY section`
   ).all<{ section: string; count: number }>();
   const recentPosts = await env.DB.prepare(
-    `SELECT p.id, p.section, p.title, p.body, p.created_at, o.name AS organization_name,
+    `SELECT p.id, p.section, p.title, p.body, p.created_at, o.name AS organization_name, o.logo_object_key AS organization_logo_object_key,
       (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'published') AS comment_count
      FROM posts p
      LEFT JOIN organizations o ON o.id = p.organization_id
      WHERE p.status = 'published'
      ORDER BY comment_count DESC, p.created_at DESC
      LIMIT 6`
-  ).all<{ id: string; section: string; title: string; body: string; created_at: string; organization_name: string | null; comment_count: number }>();
+  ).all<{ id: string; section: string; title: string; body: string; created_at: string; organization_name: string | null; organization_logo_object_key: string | null; comment_count: number }>();
 
   const countBySection = new Map(postCounts.results?.map((row) => [row.section, row.count]) ?? []);
   const orgCards = memberships.results?.length
     ? memberships.results
         .map((membership) => String.raw`
           <div class="tile">
-            <strong>${escapeHtml(membership.name)}</strong>
+            <strong>${renderOrganizationPill(membership.name, membership.logo_object_key)}</strong>
             <span>${escapeHtml(membership.summary || "Profile details are still being filled in.")}</span>
             <div class="status">
               <span>${escapeHtml(formatRole(membership.role))}</span>
@@ -1047,7 +1091,8 @@ async function renderSectionPage(env: Env, user: User, section: string) {
   const meta = sectionMeta(section);
   const [posts, writableOrganizations] = await Promise.all([
     env.DB.prepare(
-      `SELECT p.id, p.title, p.body, p.created_at, p.organization_id, o.name AS organization_name, o.slug AS organization_slug, u.name AS author_name, u.email AS author_email,
+      `SELECT p.id, p.title, p.body, p.created_at, p.organization_id, o.name AS organization_name, o.slug AS organization_slug,
+        o.logo_object_key AS organization_logo_object_key, u.name AS author_name, u.email AS author_email,
         e.image_url,
         (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'published') AS comment_count
        FROM posts p
@@ -1065,6 +1110,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
       organization_id: string | null;
       organization_name: string | null;
       organization_slug: string | null;
+      organization_logo_object_key: string | null;
       author_name: string | null;
       author_email: string;
       image_url: string | null;
@@ -1083,7 +1129,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
               <strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong>
               <p class="muted">${escapeHtml(excerpt(post.body, 180))}</p>
               <div class="meta">
-                ${post.organization_name ? `<span class="badge">${escapeHtml(post.organization_name)}</span>` : `<span class="badge">Ecosystem-wide</span>`}
+                ${post.organization_name ? renderOrganizationPill(post.organization_name, post.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
                 <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
                 <span class="badge">${Number(post.comment_count)} comments</span>
               </div>
@@ -1127,7 +1173,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
 }
 
 function renderHeroPreviews(
-  posts: Array<{ id: string; title: string; body?: string; section?: string; organization_name?: string | null; comment_count?: number; image_url?: string | null }>
+  posts: Array<{ id: string; title: string; body?: string; section?: string; organization_name?: string | null; organization_logo_object_key?: string | null; comment_count?: number; image_url?: string | null }>
 ) {
   if (!posts.length) {
     return "";
@@ -1185,7 +1231,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
   const post = await env.DB.prepare(
     `SELECT p.id, p.section, p.title, p.body, p.visibility, p.status, p.created_at, p.organization_id,
       e.starts_at, e.ends_at, e.location_name, e.registration_url, e.external_url, e.image_url,
-      o.name AS organization_name, o.slug AS organization_slug,
+      o.name AS organization_name, o.slug AS organization_slug, o.logo_object_key AS organization_logo_object_key,
       u.name AS author_name, u.email AS author_email
      FROM posts p
      LEFT JOIN events e ON e.post_id = p.id
@@ -1211,6 +1257,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
       image_url: string | null;
       organization_name: string | null;
       organization_slug: string | null;
+      organization_logo_object_key: string | null;
       author_name: string | null;
       author_email: string;
     }>();
@@ -1246,9 +1293,9 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
           <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
         </div>
         <h1>${escapeHtml(post.title)}</h1>
-        ${post.image_url ? `<img class="post-image" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
+        ${post.image_url ? `<img class="event-photo" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
         <div class="meta">
-          ${post.organization_name ? `<span class="badge">${escapeHtml(post.organization_name)}</span>` : `<span class="badge">Ecosystem-wide</span>`}
+          ${post.organization_name ? renderOrganizationPill(post.organization_name, post.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
           <span class="badge">${escapeHtml(post.author_name || post.author_email)}</span>
           ${post.starts_at ? `<span class="badge">${escapeHtml(formatDate(post.starts_at))}</span>` : ""}
           ${post.location_name ? `<span class="badge">${escapeHtml(post.location_name)}</span>` : ""}
@@ -1260,18 +1307,11 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
           ${canEditEvent ? `<a class="button primary" href="/posts/${escapeHtml(post.id)}/edit">Edit event</a>` : ""}
           ${post.registration_url ? `<a class="button secondary" href="${escapeHtml(post.registration_url)}">Event page</a>` : ""}
           ${!post.registration_url && post.external_url ? `<a class="button secondary" href="${escapeHtml(post.external_url)}">Event page</a>` : ""}
+          ${canEditEvent ? `<form method="post" action="/posts/${escapeHtml(post.id)}/delete"><button class="danger" type="submit">Remove event</button></form>` : ""}
         </div>
       </article>
 
-      <section class="admin-columns">
-        <aside class="panel">
-          <div class="panel-head">
-            <h2>Comments</h2>
-            <span class="badge">${comments.results?.length ?? 0} total</span>
-          </div>
-          <ul class="compact-list">${commentItems}</ul>
-        </aside>
-
+      <section class="section-feed">
         <aside class="panel">
           <div class="panel-head">
             <h2>Add comment</h2>
@@ -1284,6 +1324,14 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
             </label>
             <button class="primary" type="submit">Comment</button>
           </form>
+        </aside>
+
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Comments</h2>
+            <span class="badge">${comments.results?.length ?? 0} total</span>
+          </div>
+          <ul class="compact-list">${commentItems}</ul>
         </aside>
       </section>
     </section>
@@ -1446,6 +1494,33 @@ async function handleUpdateEvent(request: Request, env: Env, user: User, postId:
   });
 
   return redirect(`/posts/${post.id}`);
+}
+
+async function handleRemoveEvent(env: Env, user: User, postId: string) {
+  const post = await env.DB.prepare(
+    "SELECT id, section, status, organization_id FROM posts WHERE id = ?"
+  )
+    .bind(postId)
+    .first<{ id: string; section: string; status: string; organization_id: string | null }>();
+
+  if (!post || post.status !== "published" || post.section !== "event") {
+    throw new HttpError(404, "Event not found", "That event does not exist or is not removable.");
+  }
+
+  await requireCanManageEvent(env, user, post.organization_id);
+
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    "UPDATE posts SET status = 'archived', archived_at = ?, updated_at = ? WHERE id = ?"
+  )
+    .bind(now, now, post.id)
+    .run();
+
+  await writeAudit(env, user.id, "event.removed", "post", post.id, {
+    organization_id: post.organization_id || null,
+  });
+
+  return redirect("/events");
 }
 
 async function handleCreatePost(request: Request, env: Env, user: User) {
@@ -1819,7 +1894,7 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
 
   const organization = await env.DB.prepare(
     `SELECT id, name, slug, summary, description, website_url, contact_email, status,
-      event_source_url, event_parser, event_scraping_enabled
+      logo_object_key, event_source_url, event_parser, event_scraping_enabled
      FROM organizations
      WHERE slug = ? AND status != 'archived'`
   )
@@ -1832,6 +1907,7 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
       description: string | null;
       website_url: string | null;
       contact_email: string | null;
+      logo_object_key: string | null;
       status: string;
       event_source_url: string | null;
       event_parser: string | null;
@@ -1874,6 +1950,7 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
       <div class="dashboard-hero panel">
         <div>
           <p class="eyebrow">${escapeHtml(formatRole(membership?.role || user.site_role))}</p>
+          ${organization.logo_object_key ? `<img class="org-logo large" src="${escapeHtml(mediaUrl(organization.logo_object_key))}" alt="" loading="lazy" />` : ""}
           <h1>${escapeHtml(organization.name)}</h1>
           <p class="lede">${escapeHtml(organization.summary || "This organization profile is ready for details.")}</p>
           <div class="status">
@@ -1916,6 +1993,7 @@ function renderOrganizationEditForm(organization: {
   description: string | null;
   website_url: string | null;
   contact_email: string | null;
+  logo_object_key: string | null;
   event_source_url: string | null;
   event_parser: string | null;
   event_scraping_enabled: number;
@@ -1926,7 +2004,7 @@ function renderOrganizationEditForm(organization: {
         <h2>Edit organization profile</h2>
         <span class="badge">Org admin</span>
       </div>
-      <form method="post" action="/organizations/${escapeHtml(organization.slug)}">
+      <form method="post" action="/organizations/${escapeHtml(organization.slug)}" enctype="multipart/form-data">
         <label>
           Organization name
           <input name="name" type="text" value="${escapeHtml(organization.name)}" required />
@@ -1938,6 +2016,10 @@ function renderOrganizationEditForm(organization: {
         <label>
           Website URL
           <input name="website_url" type="url" value="${escapeHtml(organization.website_url || "")}" />
+        </label>
+        <label>
+          Organization logo
+          <input name="logo" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
         </label>
         <label>
           Event Page URL
@@ -1969,9 +2051,9 @@ function renderOrganizationEditForm(organization: {
 }
 
 async function handleUpdateOrganization(request: Request, env: Env, user: User, slug: string) {
-  const organization = await env.DB.prepare("SELECT id, slug FROM organizations WHERE slug = ?")
+  const organization = await env.DB.prepare("SELECT id, slug, logo_object_key FROM organizations WHERE slug = ?")
     .bind(slug)
-    .first<{ id: string; slug: string }>();
+    .first<{ id: string; slug: string; logo_object_key: string | null }>();
 
   if (!organization) {
     throw new HttpError(404, "Organization not found", "That organization profile does not exist.");
@@ -1997,6 +2079,7 @@ async function handleUpdateOrganization(request: Request, env: Env, user: User, 
   const eventSourceUrl = normalizeOptionalUrl(form.get("event_source_url"));
   const eventParser = cleanEventParser(form.get("event_parser"));
   const eventScrapingEnabled = form.get("event_scraping_enabled") === "1" && Boolean(eventSourceUrl && eventParser);
+  const logoObjectKey = await uploadOrganizationLogo(env, organization.id, form.get("logo"), organization.logo_object_key);
 
   if (!name) {
     throw new HttpError(400, "Organization name required", "The organization name cannot be blank.");
@@ -2005,11 +2088,11 @@ async function handleUpdateOrganization(request: Request, env: Env, user: User, 
   await env.DB.prepare(
     `UPDATE organizations
      SET name = ?, contact_email = ?, website_url = ?, summary = ?, description = ?,
-       event_source_url = ?, event_parser = ?, event_scraping_enabled = ?, updated_at = ?
+       logo_object_key = ?, event_source_url = ?, event_parser = ?, event_scraping_enabled = ?, updated_at = ?
      WHERE id = ?`
   )
     .bind(name, contactEmail || null, websiteUrl || null, summary || null, description || null,
-      eventSourceUrl || null, eventParser || null, eventScrapingEnabled ? 1 : 0, new Date().toISOString(), organization.id)
+      logoObjectKey || null, eventSourceUrl || null, eventParser || null, eventScrapingEnabled ? 1 : 0, new Date().toISOString(), organization.id)
     .run();
 
   await writeAudit(env, user.id, "organization.updated", "organization", organization.id, { slug: organization.slug });
@@ -2382,6 +2465,24 @@ async function handleLogout(session: SessionContext, env: Env) {
   });
 }
 
+async function handleMediaObject(request: Request, env: Env) {
+  const key = decodeURIComponent(new URL(request.url).pathname.replace("/media/", ""));
+  if (!key.startsWith("org-logos/")) {
+    return notFound();
+  }
+
+  const object = await env.ASSETS.get(key);
+  if (!object) {
+    return notFound();
+  }
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("etag", object.httpEtag);
+  headers.set("cache-control", "private, max-age=3600");
+  return new Response(object.body, { headers });
+}
+
 async function createSessionRedirect(env: Env, userId: string, location: string) {
   const sessionId = randomToken();
   const sessionHash = await sha256Hex(sessionId);
@@ -2502,6 +2603,32 @@ async function requireCanManageEvent(env: Env, user: User, organizationId: strin
     return;
   }
   throw new HttpError(403, "Event editor access required", "Only site admins and organization admins can edit this event.");
+}
+
+async function uploadOrganizationLogo(env: Env, organizationId: string, value: FormDataEntryValue | null, currentKey: string | null) {
+  if (!(value instanceof File) || value.size === 0) {
+    return currentKey;
+  }
+
+  const allowedTypes: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+  };
+  const extension = allowedTypes[value.type];
+  if (!extension) {
+    throw new HttpError(400, "Unsupported logo file", "Upload a PNG, JPG, WebP, or GIF image.");
+  }
+  if (value.size > 2 * 1024 * 1024) {
+    throw new HttpError(400, "Logo too large", "Upload a logo smaller than 2 MB.");
+  }
+
+  const key = `org-logos/${organizationId}-${crypto.randomUUID()}.${extension}`;
+  await env.ASSETS.put(key, await value.arrayBuffer(), {
+    httpMetadata: { contentType: value.type },
+  });
+  return key;
 }
 
 async function requireCanReadPost(env: Env, user: User, organizationId: string | null, visibility: string) {
@@ -2759,6 +2886,19 @@ function formatRole(role: string) {
     member: "Member",
   };
   return labels[role] ?? role;
+}
+
+function mediaUrl(objectKey: string) {
+  return `/${objectKey.split("/").map(encodeURIComponent).join("/")}`.replace("/org-logos/", "/media/org-logos/");
+}
+
+function renderOrganizationPill(name: string, logoObjectKey: string | null | undefined) {
+  return String.raw`
+    <span class="badge org-pill">
+      ${logoObjectKey ? `<img class="org-logo" src="${escapeHtml(mediaUrl(logoObjectKey))}" alt="" loading="lazy" />` : ""}
+      <span>${escapeHtml(name)}</span>
+    </span>
+  `;
 }
 
 type ScrapedEvent = {
