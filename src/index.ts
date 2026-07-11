@@ -461,6 +461,19 @@ const baseStyles = String.raw`
     border-radius: var(--radius-xl);
   }
 
+  .dashboard-hero > .stack {
+    align-self: start;
+    justify-items: end;
+  }
+
+  .dashboard-hero > .stack .button,
+  .dashboard-hero > .stack button {
+    min-height: 32px;
+    padding: 6px 11px;
+    font-size: 0.82rem;
+    box-shadow: none;
+  }
+
   .hero-preview {
     display: grid;
     grid-column: 1 / -1;
@@ -1088,9 +1101,6 @@ async function renderSectionPage(env: Env, user: User, section: string) {
           <p class="eyebrow">Member section</p>
           <h1>${escapeHtml(meta.title)}</h1>
           <p class="lede">${escapeHtml(meta.description)}</p>
-        </div>
-        <div class="stack">
-          <a class="button secondary" href="/app">Dashboard</a>
         </div>
         ${heroPreviews}
       </div>
@@ -1872,10 +1882,7 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
             ${organization.website_url ? `<span>${escapeHtml(organization.website_url)}</span>` : ""}
           </div>
         </div>
-        <div class="stack">
-          <a class="button secondary" href="/app">Dashboard</a>
-          ${user.site_role === "site_admin" ? `<a class="button secondary" href="/admin">Admin tools</a>` : ""}
-        </div>
+        ${user.site_role === "site_admin" ? `<div class="stack"><a class="button secondary" href="/admin">Admin tools</a></div>` : ""}
       </div>
 
       <section class="admin-columns">
