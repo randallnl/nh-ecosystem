@@ -364,6 +364,10 @@ const baseStyles = String.raw`
     box-shadow: 0 14px 28px rgba(31, 103, 177, 0.18);
   }
 
+  img.avatar {
+    object-fit: cover;
+  }
+
   .avatar.large {
     width: 86px;
     height: 86px;
@@ -873,7 +877,7 @@ export default {
         return handleUpdateOwnProfile(request, env, user);
       }
 
-      if (request.method === "GET" && url.pathname.startsWith("/media/org-logos/")) {
+      if (request.method === "GET" && (url.pathname.startsWith("/media/org-logos/") || url.pathname.startsWith("/media/profile-photos/"))) {
         requireUser(session.user);
         return handleMediaObject(request, env);
       }
@@ -1918,7 +1922,7 @@ async function renderAdmin(env: Env, user: User) {
 
 async function renderMemberDirectory(env: Env, user: User) {
   const members = await env.DB.prepare(
-    `SELECT u.id, u.email, u.name, u.profile_title, u.pronouns, u.bio, u.location, u.website_url,
+    `SELECT u.id, u.email, u.name, u.avatar_object_key, u.profile_title, u.pronouns, u.bio, u.location, u.website_url,
       GROUP_CONCAT(o.name, ', ') AS organizations
      FROM users u
      LEFT JOIN organization_memberships m ON m.user_id = u.id
@@ -1930,6 +1934,7 @@ async function renderMemberDirectory(env: Env, user: User) {
     id: string;
     email: string;
     name: string | null;
+    avatar_object_key: string | null;
     profile_title: string | null;
     pronouns: string | null;
     bio: string | null;
@@ -1942,7 +1947,7 @@ async function renderMemberDirectory(env: Env, user: User) {
     ? members.results
         .map((member) => String.raw`
           <div class="tile member-card">
-            ${renderAvatar(member.name || member.email)}
+            ${renderAvatar(member.name || member.email, member.avatar_object_key)}
             <div>
               <strong><a href="/members/${escapeHtml(member.id)}">${escapeHtml(member.name || member.email)}</a></strong>
               <span>${escapeHtml(member.profile_title || member.organizations || "Ecosystem member")}</span>
@@ -1994,7 +1999,7 @@ async function renderMemberProfile(env: Env, user: User, memberId: string) {
     <section class="dashboard content-page">
       <article class="panel">
         <div class="profile-summary">
-          ${renderAvatar(member.name || member.email, true)}
+          ${renderAvatar(member.name || member.email, member.avatar_object_key, true)}
           <div>
             <p class="eyebrow">Member profile</p>
             <h1 class="event-detail-title">${escapeHtml(member.name || member.email)}</h1>
@@ -2060,14 +2065,20 @@ async function renderEditOwnProfile(env: Env, user: User) {
 async function handleUpdateOwnProfile(request: Request, env: Env, user: User) {
   const form = await request.formData();
   const profile = readMemberProfileForm(form);
+  const existing = await getMemberProfile(env, user.id);
+  if (!existing) {
+    throw new HttpError(404, "Member not found", "That member profile does not exist.");
+  }
+  const avatarObjectKey = await uploadProfilePhoto(env, user.id, form.get("avatar"), existing.avatar_object_key);
 
   await env.DB.prepare(
     `UPDATE users
-     SET name = ?, profile_title = ?, pronouns = ?, bio = ?, location = ?, website_url = ?, profile_visibility = ?, updated_at = ?
+     SET name = ?, avatar_object_key = ?, profile_title = ?, pronouns = ?, bio = ?, location = ?, website_url = ?, profile_visibility = ?, updated_at = ?
      WHERE id = ?`
   )
     .bind(
       profile.name || null,
+      avatarObjectKey || null,
       profile.profileTitle || null,
       profile.pronouns || null,
       profile.bio || null,
@@ -2112,7 +2123,14 @@ async function getMemberOrganizations(env: Env, memberId: string) {
 
 function renderMemberProfileForm(member: MemberProfile, action: string, includeAdminFields: boolean) {
   return String.raw`
-    <form method="post" action="${escapeHtml(action)}">
+    <form method="post" action="${escapeHtml(action)}" enctype="multipart/form-data">
+      <div class="profile-summary">
+        ${renderAvatar(member.name || member.email, member.avatar_object_key, true)}
+        <label>
+          Profile photo
+          <input name="avatar" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+        </label>
+      </div>
       <label>
         Name
         <input name="name" type="text" autocomplete="name" value="${escapeHtml(member.name || "")}" />
@@ -2190,7 +2208,10 @@ function readMemberProfileForm(form: FormData) {
   };
 }
 
-function renderAvatar(label: string, large = false) {
+function renderAvatar(label: string, avatarObjectKey: string | null | undefined = null, large = false) {
+  if (avatarObjectKey) {
+    return `<img class="avatar${large ? " large" : ""}" src="${escapeHtml(mediaUrl(avatarObjectKey))}" alt="" loading="lazy" />`;
+  }
   const initials = label
     .split(/\s+|@/)
     .filter(Boolean)
@@ -2277,9 +2298,9 @@ async function renderAdminUserProfile(env: Env, admin: User, userId: string) {
 }
 
 async function handleUpdateUserProfile(request: Request, env: Env, admin: User, userId: string) {
-  const existing = await env.DB.prepare("SELECT id, email, site_role, status FROM users WHERE id = ?")
+  const existing = await env.DB.prepare("SELECT id, email, avatar_object_key, site_role, status FROM users WHERE id = ?")
     .bind(userId)
-    .first<{ id: string; email: string; site_role: "member" | "site_admin"; status: "invited" | "active" | "suspended" }>();
+    .first<{ id: string; email: string; avatar_object_key: string | null; site_role: "member" | "site_admin"; status: "invited" | "active" | "suspended" }>();
   if (!existing) {
     throw new HttpError(404, "Member not found", "That member profile does not exist.");
   }
@@ -2299,16 +2320,19 @@ async function handleUpdateUserProfile(request: Request, env: Env, admin: User, 
     throw new HttpError(400, "Cannot lock yourself out", "Keep your own account active and assigned as a site admin.");
   }
 
+  const avatarObjectKey = await uploadProfilePhoto(env, existing.id, form.get("avatar"), existing.avatar_object_key);
+
   try {
     await env.DB.prepare(
       `UPDATE users
-       SET email = ?, name = ?, profile_title = ?, pronouns = ?, bio = ?, location = ?, website_url = ?,
+       SET email = ?, name = ?, avatar_object_key = ?, profile_title = ?, pronouns = ?, bio = ?, location = ?, website_url = ?,
          profile_visibility = ?, site_role = ?, status = ?, updated_at = ?
        WHERE id = ?`
     )
       .bind(
         email,
         name || null,
+        avatarObjectKey || null,
         profile.profileTitle || null,
         profile.pronouns || null,
         profile.bio || null,
@@ -2952,7 +2976,7 @@ async function handleLogout(session: SessionContext, env: Env) {
 
 async function handleMediaObject(request: Request, env: Env) {
   const key = decodeURIComponent(new URL(request.url).pathname.replace("/media/", ""));
-  if (!key.startsWith("org-logos/")) {
+  if (!key.startsWith("org-logos/") && !key.startsWith("profile-photos/")) {
     return notFound();
   }
 
@@ -3110,6 +3134,32 @@ async function uploadOrganizationLogo(env: Env, organizationId: string, value: F
   }
 
   const key = `org-logos/${organizationId}-${crypto.randomUUID()}.${extension}`;
+  await env.ASSETS.put(key, await value.arrayBuffer(), {
+    httpMetadata: { contentType: value.type },
+  });
+  return key;
+}
+
+async function uploadProfilePhoto(env: Env, userId: string, value: FormDataEntryValue | null, currentKey: string | null) {
+  if (!(value instanceof File) || value.size === 0) {
+    return currentKey;
+  }
+
+  const allowedTypes: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+  };
+  const extension = allowedTypes[value.type];
+  if (!extension) {
+    throw new HttpError(400, "Unsupported profile photo", "Upload a PNG, JPG, WebP, or GIF image.");
+  }
+  if (value.size > 2 * 1024 * 1024) {
+    throw new HttpError(400, "Profile photo too large", "Upload a profile photo smaller than 2 MB.");
+  }
+
+  const key = `profile-photos/${userId}-${crypto.randomUUID()}.${extension}`;
   await env.ASSETS.put(key, await value.arrayBuffer(), {
     httpMetadata: { contentType: value.type },
   });
@@ -3379,7 +3429,10 @@ function formatRole(role: string) {
 }
 
 function mediaUrl(objectKey: string) {
-  return `/${objectKey.split("/").map(encodeURIComponent).join("/")}`.replace("/org-logos/", "/media/org-logos/");
+  const path = `/${objectKey.split("/").map(encodeURIComponent).join("/")}`;
+  return path
+    .replace("/org-logos/", "/media/org-logos/")
+    .replace("/profile-photos/", "/media/profile-photos/");
 }
 
 function renderOrganizationPill(name: string, logoObjectKey: string | null | undefined) {
