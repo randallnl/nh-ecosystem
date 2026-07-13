@@ -594,18 +594,22 @@ const baseStyles = String.raw`
 
   .event-detail-body {
     display: grid;
-    grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.15fr);
-    gap: 22px;
+    grid-template-columns: minmax(280px, 1fr) minmax(220px, 0.72fr);
+    gap: 28px;
     align-items: start;
     margin-top: 18px;
   }
 
   .event-detail-copy {
     min-width: 0;
+    max-width: 520px;
   }
 
   .event-detail-copy .lede {
     margin-top: 0;
+    color: #1b2f4a;
+    font-size: 1.04rem;
+    line-height: 1.58;
   }
 
   .org-pill {
