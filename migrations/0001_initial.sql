@@ -5,6 +5,12 @@ CREATE TABLE users (
   email TEXT NOT NULL UNIQUE,
   name TEXT,
   avatar_object_key TEXT,
+  profile_title TEXT,
+  pronouns TEXT,
+  bio TEXT,
+  location TEXT,
+  website_url TEXT,
+  profile_visibility TEXT NOT NULL DEFAULT 'members' CHECK (profile_visibility IN ('members', 'hidden')),
   site_role TEXT NOT NULL DEFAULT 'member' CHECK (site_role IN ('member', 'site_admin')),
   status TEXT NOT NULL DEFAULT 'invited' CHECK (status IN ('invited', 'active', 'suspended')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -129,6 +135,7 @@ CREATE TABLE audit_log (
 
 CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
+CREATE INDEX idx_users_profile_visibility ON users(profile_visibility, name);
 CREATE INDEX idx_memberships_user_id ON organization_memberships(user_id);
 CREATE INDEX idx_posts_section_created_at ON posts(section, created_at DESC);
 CREATE INDEX idx_posts_organization_id ON posts(organization_id);

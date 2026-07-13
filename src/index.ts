@@ -29,6 +29,24 @@ type SessionContext = {
   sessionId: string | null;
 };
 
+type MemberProfile = {
+  id: string;
+  email: string;
+  name: string | null;
+  avatar_object_key: string | null;
+  profile_title: string | null;
+  pronouns: string | null;
+  bio: string | null;
+  location: string | null;
+  website_url: string | null;
+  profile_visibility: "members" | "hidden";
+  site_role: "member" | "site_admin";
+  status: "invited" | "active" | "suspended";
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string | null;
+};
+
 const SESSION_COOKIE = "nhse_session";
 const SESSION_DAYS = 30;
 const TOKEN_MINUTES = 20;
@@ -331,6 +349,39 @@ const baseStyles = String.raw`
     background: var(--accent);
     font-size: 0.86rem;
     font-weight: 850;
+  }
+
+  .avatar {
+    display: grid;
+    width: 54px;
+    height: 54px;
+    place-items: center;
+    flex: 0 0 auto;
+    border-radius: var(--radius-pill);
+    color: #ffffff;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    font-weight: 900;
+    box-shadow: 0 14px 28px rgba(31, 103, 177, 0.18);
+  }
+
+  .avatar.large {
+    width: 86px;
+    height: 86px;
+    font-size: 1.38rem;
+  }
+
+  .member-card {
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+  }
+
+  .profile-summary {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 18px;
+    align-items: start;
   }
 
   .bar,
@@ -811,6 +862,17 @@ export default {
         return handleLogout(session, env);
       }
 
+      if (request.method === "GET" && url.pathname === "/profile") {
+        const user = requireUser(session.user);
+        return html(await renderEditOwnProfile(env, user));
+      }
+
+      if (request.method === "POST" && url.pathname === "/profile") {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        return handleUpdateOwnProfile(request, env, user);
+      }
+
       if (request.method === "GET" && url.pathname.startsWith("/media/org-logos/")) {
         requireUser(session.user);
         return handleMediaObject(request, env);
@@ -909,6 +971,17 @@ export default {
         const user = requireUser(session.user);
         const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/comments", "")).split("/")[0];
         return handleCreateComment(request, env, user, postId);
+      }
+
+      if (request.method === "GET" && url.pathname === "/members") {
+        const user = requireUser(session.user);
+        return html(await renderMemberDirectory(env, user));
+      }
+
+      if (request.method === "GET" && url.pathname.startsWith("/members/")) {
+        const user = requireUser(session.user);
+        const memberId = decodeURIComponent(url.pathname.replace("/members/", "")).split("/")[0];
+        return html(await renderMemberProfile(env, user, memberId));
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/organizations/")) {
@@ -1112,6 +1185,7 @@ async function renderApp(env: Env, user: User) {
           <p class="lede">This is the protected app area. Future legislation notes, events, projects, comments, and organization tools will live behind this authorization boundary.</p>
         </div>
         <div class="stack">
+          <a class="button secondary" href="/profile">Edit profile</a>
           ${user.site_role === "site_admin" ? `<a class="button secondary" href="/admin">Admin tools</a>` : ""}
           <form method="post" action="/logout"><button class="danger" type="submit">Sign out</button></form>
         </div>
@@ -1842,23 +1916,299 @@ async function renderAdmin(env: Env, user: User) {
   `, user);
 }
 
+async function renderMemberDirectory(env: Env, user: User) {
+  const members = await env.DB.prepare(
+    `SELECT u.id, u.email, u.name, u.profile_title, u.pronouns, u.bio, u.location, u.website_url,
+      GROUP_CONCAT(o.name, ', ') AS organizations
+     FROM users u
+     LEFT JOIN organization_memberships m ON m.user_id = u.id
+     LEFT JOIN organizations o ON o.id = m.organization_id
+     WHERE u.status = 'active' AND u.profile_visibility = 'members'
+     GROUP BY u.id
+     ORDER BY COALESCE(u.name, u.email)`
+  ).all<{
+    id: string;
+    email: string;
+    name: string | null;
+    profile_title: string | null;
+    pronouns: string | null;
+    bio: string | null;
+    location: string | null;
+    website_url: string | null;
+    organizations: string | null;
+  }>();
+
+  const memberItems = members.results?.length
+    ? members.results
+        .map((member) => String.raw`
+          <div class="tile member-card">
+            ${renderAvatar(member.name || member.email)}
+            <div>
+              <strong><a href="/members/${escapeHtml(member.id)}">${escapeHtml(member.name || member.email)}</a></strong>
+              <span>${escapeHtml(member.profile_title || member.organizations || "Ecosystem member")}</span>
+              <div class="status">
+                ${member.pronouns ? `<span>${escapeHtml(member.pronouns)}</span>` : ""}
+                ${member.location ? `<span>${escapeHtml(member.location)}</span>` : ""}
+              </div>
+              ${member.bio ? `<p class="muted">${escapeHtml(excerpt(member.bio, 150))}</p>` : ""}
+            </div>
+          </div>
+        `)
+        .join("")
+    : `<div class="tile"><strong>No member profiles yet</strong><span>Profiles appear here when members make them visible.</span></div>`;
+
+  return layout("Members", String.raw`
+    <section class="dashboard">
+      <div class="dashboard-hero panel">
+        <div>
+          <p class="eyebrow">Member directory</p>
+          <h1>People in the ecosystem</h1>
+          <p class="lede">Find collaborators, organizers, and organization contacts across the member network.</p>
+        </div>
+        <div class="stack">
+          <a class="button secondary" href="/profile">Edit your profile</a>
+        </div>
+      </div>
+
+      <section class="dashboard-grid" aria-label="Member profiles">
+        ${memberItems}
+      </section>
+    </section>
+  `, user);
+}
+
+async function renderMemberProfile(env: Env, user: User, memberId: string) {
+  const member = await getMemberProfile(env, memberId);
+  if (!member || member.status !== "active" || (member.profile_visibility === "hidden" && user.id !== member.id && user.site_role !== "site_admin")) {
+    throw new HttpError(404, "Member not found", "That member profile does not exist or is not visible.");
+  }
+
+  const memberships = await getMemberOrganizations(env, member.id);
+  const membershipItems = memberships.length
+    ? memberships
+        .map((membership) => `<li><strong><a href="/organizations/${escapeHtml(membership.slug)}">${escapeHtml(membership.name)}</a></strong><br /><span class="muted">${escapeHtml(formatRole(membership.role))}</span></li>`)
+        .join("")
+    : `<li><strong>No organizations linked</strong><br /><span class="muted">This member is not linked to an organization yet.</span></li>`;
+
+  return layout(member.name || member.email, String.raw`
+    <section class="dashboard content-page">
+      <article class="panel">
+        <div class="profile-summary">
+          ${renderAvatar(member.name || member.email, true)}
+          <div>
+            <p class="eyebrow">Member profile</p>
+            <h1 class="event-detail-title">${escapeHtml(member.name || member.email)}</h1>
+            <p class="lede">${escapeHtml(member.profile_title || "Ecosystem member")}</p>
+            <div class="meta">
+              ${member.pronouns ? `<span class="badge">${escapeHtml(member.pronouns)}</span>` : ""}
+              ${member.location ? `<span class="badge">${escapeHtml(member.location)}</span>` : ""}
+              ${member.site_role === "site_admin" ? `<span class="badge">Site admin</span>` : ""}
+            </div>
+          </div>
+        </div>
+        ${member.bio ? `<p class="post-body lede">${escapeHtml(member.bio)}</p>` : `<p class="lede">This member has not added a bio yet.</p>`}
+        <div class="actions">
+          <a class="button secondary" href="/members">All members</a>
+          ${member.website_url ? `<a class="button secondary" href="${escapeHtml(member.website_url)}">Website</a>` : ""}
+          ${member.id === user.id ? `<a class="button primary" href="/profile">Edit profile</a>` : ""}
+          ${user.site_role === "site_admin" ? `<a class="button secondary" href="/admin/users/${escapeHtml(member.id)}">Admin edit</a>` : ""}
+        </div>
+      </article>
+
+      <aside class="panel">
+        <div class="panel-head">
+          <h2>Organizations</h2>
+          <span class="badge">${memberships.length} linked</span>
+        </div>
+        <ul class="compact-list">${membershipItems}</ul>
+      </aside>
+    </section>
+  `, user);
+}
+
+async function renderEditOwnProfile(env: Env, user: User) {
+  const member = await getMemberProfile(env, user.id);
+  if (!member) {
+    throw new HttpError(404, "Member not found", "That member profile does not exist.");
+  }
+
+  return layout("Edit profile", String.raw`
+    <section class="dashboard content-page">
+      <div class="dashboard-hero panel">
+        <div>
+          <p class="eyebrow">Your profile</p>
+          <h1>Edit profile</h1>
+          <p class="lede">Choose what other members can see when they open your profile or browse the member directory.</p>
+        </div>
+        <div class="stack">
+          <a class="button secondary" href="/members/${escapeHtml(member.id)}">View profile</a>
+          <a class="button secondary" href="/members">Member directory</a>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Profile details</h2>
+          <span class="badge">${member.profile_visibility === "members" ? "Visible to members" : "Hidden"}</span>
+        </div>
+        ${renderMemberProfileForm(member, "/profile", false)}
+      </section>
+    </section>
+  `, user);
+}
+
+async function handleUpdateOwnProfile(request: Request, env: Env, user: User) {
+  const form = await request.formData();
+  const profile = readMemberProfileForm(form);
+
+  await env.DB.prepare(
+    `UPDATE users
+     SET name = ?, profile_title = ?, pronouns = ?, bio = ?, location = ?, website_url = ?, profile_visibility = ?, updated_at = ?
+     WHERE id = ?`
+  )
+    .bind(
+      profile.name || null,
+      profile.profileTitle || null,
+      profile.pronouns || null,
+      profile.bio || null,
+      profile.location || null,
+      profile.websiteUrl || null,
+      profile.profileVisibility,
+      new Date().toISOString(),
+      user.id
+    )
+    .run();
+
+  await writeAudit(env, user.id, "member.profile_self_updated", "user", user.id, {
+    profile_visibility: profile.profileVisibility,
+  });
+
+  return redirect("/profile");
+}
+
+async function getMemberProfile(env: Env, memberId: string) {
+  return env.DB.prepare(
+    `SELECT id, email, name, avatar_object_key, profile_title, pronouns, bio, location, website_url,
+      profile_visibility, site_role, status, created_at, updated_at, last_seen_at
+     FROM users
+     WHERE id = ?`
+  )
+    .bind(memberId)
+    .first<MemberProfile>();
+}
+
+async function getMemberOrganizations(env: Env, memberId: string) {
+  const memberships = await env.DB.prepare(
+    `SELECT o.name, o.slug, m.role
+     FROM organization_memberships m
+     JOIN organizations o ON o.id = m.organization_id
+     WHERE m.user_id = ?
+     ORDER BY o.name`
+  )
+    .bind(memberId)
+    .all<{ name: string; slug: string; role: string }>();
+  return memberships.results ?? [];
+}
+
+function renderMemberProfileForm(member: MemberProfile, action: string, includeAdminFields: boolean) {
+  return String.raw`
+    <form method="post" action="${escapeHtml(action)}">
+      <label>
+        Name
+        <input name="name" type="text" autocomplete="name" value="${escapeHtml(member.name || "")}" />
+      </label>
+      ${includeAdminFields ? String.raw`
+        <label>
+          Email
+          <input name="email" type="email" value="${escapeHtml(member.email)}" required />
+        </label>
+      ` : ""}
+      <label>
+        Role or title
+        <input name="profile_title" type="text" value="${escapeHtml(member.profile_title || "")}" placeholder="Organizer, policy lead, volunteer coordinator..." />
+      </label>
+      <label>
+        Pronouns
+        <input name="pronouns" type="text" value="${escapeHtml(member.pronouns || "")}" />
+      </label>
+      <label>
+        Location
+        <input name="location" type="text" value="${escapeHtml(member.location || "")}" placeholder="Manchester, Seacoast, Upper Valley..." />
+      </label>
+      <label>
+        Website
+        <input name="website_url" type="url" value="${escapeHtml(member.website_url || "")}" />
+      </label>
+      <label>
+        Bio
+        <textarea name="bio" placeholder="Share what you work on, what you can help with, and what you want members to know.">${escapeHtml(member.bio || "")}</textarea>
+      </label>
+      <label>
+        Profile visibility
+        <select name="profile_visibility">
+          <option value="members" ${member.profile_visibility === "members" ? "selected" : ""}>Visible to members</option>
+          <option value="hidden" ${member.profile_visibility === "hidden" ? "selected" : ""}>Hidden from member directory</option>
+        </select>
+      </label>
+      ${includeAdminFields ? String.raw`
+        <label>
+          Site role
+          <select name="site_role">
+            <option value="member" ${member.site_role === "member" ? "selected" : ""}>Member</option>
+            <option value="site_admin" ${member.site_role === "site_admin" ? "selected" : ""}>Site admin</option>
+          </select>
+        </label>
+        <label>
+          Account status
+          <select name="status">
+            <option value="invited" ${member.status === "invited" ? "selected" : ""}>Invited</option>
+            <option value="active" ${member.status === "active" ? "selected" : ""}>Active</option>
+            <option value="suspended" ${member.status === "suspended" ? "selected" : ""}>Suspended</option>
+          </select>
+        </label>
+      ` : ""}
+      <button class="primary" type="submit">Save profile</button>
+    </form>
+  `;
+}
+
+function readMemberProfileForm(form: FormData) {
+  const websiteUrl = normalizeOptionalUrl(form.get("website_url"));
+  const rawWebsite = typeof form.get("website_url") === "string" ? String(form.get("website_url")).trim() : "";
+  if (rawWebsite && !websiteUrl) {
+    throw new HttpError(400, "Website URL invalid", "Use a full website URL starting with http:// or https://.");
+  }
+
+  return {
+    name: cleanText(form.get("name"), 120),
+    profileTitle: cleanText(form.get("profile_title"), 160),
+    pronouns: cleanText(form.get("pronouns"), 80),
+    bio: cleanText(form.get("bio"), 1200),
+    location: cleanText(form.get("location"), 120),
+    websiteUrl,
+    profileVisibility: cleanProfileVisibility(form.get("profile_visibility")),
+  };
+}
+
+function renderAvatar(label: string, large = false) {
+  const initials = label
+    .split(/\s+|@/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("") || "NH";
+  return `<span class="avatar${large ? " large" : ""}" aria-hidden="true">${escapeHtml(initials)}</span>`;
+}
+
 async function renderAdminUserProfile(env: Env, admin: User, userId: string) {
   const member = await env.DB.prepare(
-    `SELECT id, email, name, site_role, status, created_at, updated_at, last_seen_at
+    `SELECT id, email, name, avatar_object_key, profile_title, pronouns, bio, location, website_url,
+      profile_visibility, site_role, status, created_at, updated_at, last_seen_at
      FROM users
      WHERE id = ?`
   )
     .bind(userId)
-    .first<{
-      id: string;
-      email: string;
-      name: string | null;
-      site_role: "member" | "site_admin";
-      status: "invited" | "active" | "suspended";
-      created_at: string;
-      updated_at: string;
-      last_seen_at: string | null;
-    }>();
+    .first<MemberProfile>();
 
   if (!member) {
     throw new HttpError(404, "Member not found", "That member profile does not exist.");
@@ -1903,32 +2253,7 @@ async function renderAdminUserProfile(env: Env, admin: User, userId: string) {
             <h2>Profile details</h2>
             <span class="badge">${member.id === admin.id ? "Your account" : "Editable"}</span>
           </div>
-          <form method="post" action="/admin/users/${escapeHtml(member.id)}">
-            <label>
-              Name
-              <input name="name" type="text" value="${escapeHtml(member.name || "")}" />
-            </label>
-            <label>
-              Email
-              <input name="email" type="email" value="${escapeHtml(member.email)}" required />
-            </label>
-            <label>
-              Site role
-              <select name="site_role">
-                <option value="member" ${member.site_role === "member" ? "selected" : ""}>Member</option>
-                <option value="site_admin" ${member.site_role === "site_admin" ? "selected" : ""}>Site admin</option>
-              </select>
-            </label>
-            <label>
-              Account status
-              <select name="status">
-                <option value="invited" ${member.status === "invited" ? "selected" : ""}>Invited</option>
-                <option value="active" ${member.status === "active" ? "selected" : ""}>Active</option>
-                <option value="suspended" ${member.status === "suspended" ? "selected" : ""}>Suspended</option>
-              </select>
-            </label>
-            <button class="primary" type="submit">Update profile</button>
-          </form>
+          ${renderMemberProfileForm(member, `/admin/users/${member.id}`, true)}
         </aside>
 
         <aside class="panel">
@@ -1964,6 +2289,7 @@ async function handleUpdateUserProfile(request: Request, env: Env, admin: User, 
   const email = normalizeEmail(form.get("email"));
   const siteRole = cleanSiteRole(form.get("site_role"));
   const status = cleanUserStatus(form.get("status"));
+  const profile = readMemberProfileForm(form);
 
   if (!email || !siteRole || !status) {
     throw new HttpError(400, "Profile details required", "Enter a valid email, site role, and account status.");
@@ -1976,10 +2302,24 @@ async function handleUpdateUserProfile(request: Request, env: Env, admin: User, 
   try {
     await env.DB.prepare(
       `UPDATE users
-       SET email = ?, name = ?, site_role = ?, status = ?, updated_at = ?
+       SET email = ?, name = ?, profile_title = ?, pronouns = ?, bio = ?, location = ?, website_url = ?,
+         profile_visibility = ?, site_role = ?, status = ?, updated_at = ?
        WHERE id = ?`
     )
-      .bind(email, name || null, siteRole, status, new Date().toISOString(), existing.id)
+      .bind(
+        email,
+        name || null,
+        profile.profileTitle || null,
+        profile.pronouns || null,
+        profile.bio || null,
+        profile.location || null,
+        profile.websiteUrl || null,
+        profile.profileVisibility,
+        siteRole,
+        status,
+        new Date().toISOString(),
+        existing.id
+      )
       .run();
   } catch {
     throw new HttpError(400, "Email already in use", "Choose a different email address for this member.");
@@ -1990,6 +2330,7 @@ async function handleUpdateUserProfile(request: Request, env: Env, admin: User, 
     email,
     site_role: siteRole,
     status,
+    profile_visibility: profile.profileVisibility,
   });
 
   return redirect(`/admin/users/${existing.id}`);
@@ -2854,8 +3195,9 @@ function renderNav(user: User | null) {
         ${user ? `<a href="/events">Events</a>` : ""}
         ${user ? `<a href="/projects">Projects</a>` : ""}
         ${user ? `<a href="/updates">Updates</a>` : ""}
+        ${user ? `<a href="/members">Members</a>` : ""}
         ${user?.site_role === "site_admin" ? `<a href="/admin">Admin</a>` : ""}
-        ${!user ? `<a href="/request-invite">Request invite</a>` : `<span>${escapeHtml(user.email)}</span>`}
+        ${!user ? `<a href="/request-invite">Request invite</a>` : `<a href="/profile">${escapeHtml(user.name || user.email)}</a>`}
       </div>
     </nav>
   `;
@@ -2969,6 +3311,10 @@ function cleanSiteRole(value: FormDataEntryValue | null) {
 
 function cleanUserStatus(value: FormDataEntryValue | null) {
   return value === "invited" || value === "active" || value === "suspended" ? value : "";
+}
+
+function cleanProfileVisibility(value: FormDataEntryValue | null) {
+  return value === "members" || value === "hidden" ? value : "members";
 }
 
 function cleanDateTimeLocal(value: FormDataEntryValue | null) {
