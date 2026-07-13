@@ -47,6 +47,12 @@ type MemberProfile = {
   last_seen_at: string | null;
 };
 
+type Affiliation = {
+  id: string;
+  name: string;
+  slug: string;
+};
+
 const SESSION_COOKIE = "nhse_session";
 const SESSION_DAYS = 30;
 const TOKEN_MINUTES = 20;
@@ -389,6 +395,32 @@ const baseStyles = String.raw`
     align-items: start;
   }
 
+  .tag-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .tag-picker label {
+    display: inline-flex;
+    grid-auto-flow: column;
+    align-items: center;
+    width: auto;
+    min-height: 36px;
+    padding: 7px 12px;
+    border: 1px solid rgba(31, 103, 177, 0.18);
+    border-radius: var(--radius-pill);
+    color: var(--accent);
+    background: var(--soft-blue);
+    font-size: 0.82rem;
+  }
+
+  .tag-picker input {
+    width: auto;
+    min-height: auto;
+    margin: 0;
+  }
+
   .bar,
   .dashboard-grid {
     display: grid;
@@ -450,6 +482,14 @@ const baseStyles = String.raw`
   }
 
   label {
+    display: grid;
+    gap: 7px;
+    color: var(--muted);
+    font-size: 0.92rem;
+    font-weight: 750;
+  }
+
+  .field-group {
     display: grid;
     gap: 7px;
     color: var(--muted);
@@ -900,6 +940,13 @@ export default {
         const user = requireUser(session.user);
         requireSiteAdmin(user);
         return handleAdminInvite(request, env, user);
+      }
+
+      if (request.method === "POST" && url.pathname === "/admin/affiliations") {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        requireSiteAdmin(user);
+        return handleCreateAffiliation(request, env, user);
       }
 
       if (request.method === "POST" && url.pathname === "/admin/scraper/run") {
@@ -1775,6 +1822,7 @@ async function renderAdmin(env: Env, user: User) {
      FROM organizations
      ORDER BY name`
   ).all<{ id: string; name: string; slug: string; contact_email: string | null; status: string; event_source_url: string | null; event_scraping_enabled: number }>();
+  const affiliations = await getAffiliations(env);
   const recentUsers = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.site_role, u.status, GROUP_CONCAT(o.name || ' (' || m.role || ')', ', ') AS organizations
      FROM users u
@@ -1792,6 +1840,7 @@ async function renderAdmin(env: Env, user: User) {
   const organizationOptions = organizations.results?.length
     ? organizations.results.map((organization) => `<option value="${escapeHtml(organization.id)}">${escapeHtml(organization.name)}</option>`).join("")
     : "";
+  const affiliationPicker = renderAffiliationPicker(affiliations, new Set());
   const organizationItems = organizations.results?.length
     ? organizations.results
         .map((organization) => `<li><strong><a href="/organizations/${escapeHtml(organization.slug)}">${escapeHtml(organization.name)}</a></strong><br /><span class="muted">${escapeHtml(organization.slug)}${organization.contact_email ? ` · ${escapeHtml(organization.contact_email)}` : ""} · ${escapeHtml(organization.status)}${organization.event_source_url ? ` · Event Page URL set` : ""}${organization.event_scraping_enabled ? " · scraping enabled" : ""}</span></li>`)
@@ -1856,6 +1905,10 @@ async function renderAdmin(env: Env, user: User) {
               Summary
               <textarea name="summary" placeholder="Short description or issue areas"></textarea>
             </label>
+            <div class="field-group">
+              <span>Affiliations</span>
+              ${affiliationPicker}
+            </div>
             <label>
               Event Page URL
               <input name="event_source_url" type="url" placeholder="https://example.org/events" />
@@ -1872,6 +1925,20 @@ async function renderAdmin(env: Env, user: User) {
               Import events from this organization
             </label>
             <button class="primary" type="submit">Create organization</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Add affiliation</h2>
+            <span class="badge">Coalition tag</span>
+          </div>
+          <form method="post" action="/admin/affiliations">
+            <label>
+              Affiliation name
+              <input name="name" type="text" placeholder="Coalition or convening name" required />
+            </label>
+            <button class="primary" type="submit">Add affiliation</button>
           </form>
         </div>
 
@@ -1952,7 +2019,8 @@ async function renderMemberDirectory(env: Env, user: User) {
     organizations: string | null;
   }>();
 
-  const memberItems = members.results?.length
+  const affiliationMap = await getEffectiveAffiliationsByUserIds(env, (members.results ?? []).map((member) => member.id));
+  const renderedMemberItems = members.results?.length
     ? members.results
         .map((member) => String.raw`
           <div class="tile member-card">
@@ -1964,6 +2032,7 @@ async function renderMemberDirectory(env: Env, user: User) {
                 ${member.pronouns ? `<span>${escapeHtml(member.pronouns)}</span>` : ""}
                 ${member.location ? `<span>${escapeHtml(member.location)}</span>` : ""}
               </div>
+              ${renderAffiliationBadges(affiliationMap.get(member.id) ?? [])}
               ${member.bio ? `<p class="muted">${escapeHtml(excerpt(member.bio, 150))}</p>` : ""}
             </div>
           </div>
@@ -1985,7 +2054,7 @@ async function renderMemberDirectory(env: Env, user: User) {
       </div>
 
       <section class="dashboard-grid" aria-label="Member profiles">
-        ${memberItems}
+        ${renderedMemberItems}
       </section>
     </section>
   `, user);
@@ -1998,6 +2067,7 @@ async function renderMemberProfile(env: Env, user: User, memberId: string) {
   }
 
   const memberships = await getMemberOrganizations(env, member.id);
+  const affiliations = await getEffectiveUserAffiliations(env, member.id);
   const membershipItems = memberships.length
     ? memberships
         .map((membership) => `<li><strong><a href="/organizations/${escapeHtml(membership.slug)}">${escapeHtml(membership.name)}</a></strong><br /><span class="muted">${escapeHtml(formatRole(membership.role))}</span></li>`)
@@ -2018,6 +2088,7 @@ async function renderMemberProfile(env: Env, user: User, memberId: string) {
               ${member.location ? `<span class="badge">${escapeHtml(member.location)}</span>` : ""}
               ${member.site_role === "site_admin" ? `<span class="badge">Site admin</span>` : ""}
             </div>
+            ${renderAffiliationBadges(affiliations)}
           </div>
         </div>
         ${member.bio ? `<p class="post-body lede">${escapeHtml(member.bio)}</p>` : `<p class="lede">This member has not added a bio yet.</p>`}
@@ -2045,6 +2116,11 @@ async function renderEditOwnProfile(env: Env, user: User) {
   if (!member) {
     throw new HttpError(404, "Member not found", "That member profile does not exist.");
   }
+  const [affiliations, directAffiliationIds, inheritedAffiliations] = await Promise.all([
+    getAffiliations(env),
+    getDirectUserAffiliationIds(env, user.id),
+    getInheritedUserAffiliations(env, user.id),
+  ]);
 
   return layout("Edit profile", String.raw`
     <section class="dashboard content-page">
@@ -2065,7 +2141,7 @@ async function renderEditOwnProfile(env: Env, user: User) {
           <h2>Profile details</h2>
           <span class="badge">${member.profile_visibility === "members" ? "Visible to members" : "Hidden"}</span>
         </div>
-        ${renderMemberProfileForm(member, "/profile", false)}
+        ${renderMemberProfileForm(member, "/profile", false, affiliations, directAffiliationIds, inheritedAffiliations)}
       </section>
     </section>
   `, user);
@@ -2079,6 +2155,8 @@ async function handleUpdateOwnProfile(request: Request, env: Env, user: User) {
     throw new HttpError(404, "Member not found", "That member profile does not exist.");
   }
   const avatarObjectKey = await uploadProfilePhoto(env, user.id, form.get("avatar"), existing.avatar_object_key);
+  const affiliations = await getAffiliations(env);
+  const affiliationIds = cleanAffiliationIds(form, affiliations);
 
   await env.DB.prepare(
     `UPDATE users
@@ -2102,6 +2180,7 @@ async function handleUpdateOwnProfile(request: Request, env: Env, user: User) {
   await writeAudit(env, user.id, "member.profile_self_updated", "user", user.id, {
     profile_visibility: profile.profileVisibility,
   });
+  await replaceUserAffiliations(env, user.id, affiliationIds);
 
   return redirect("/profile");
 }
@@ -2130,7 +2209,151 @@ async function getMemberOrganizations(env: Env, memberId: string) {
   return memberships.results ?? [];
 }
 
-function renderMemberProfileForm(member: MemberProfile, action: string, includeAdminFields: boolean) {
+async function getAffiliations(env: Env) {
+  const affiliations = await env.DB.prepare(
+    "SELECT id, name, slug FROM affiliations ORDER BY name"
+  ).all<Affiliation>();
+  return affiliations.results ?? [];
+}
+
+async function getOrganizationAffiliationIds(env: Env, organizationId: string) {
+  const rows = await env.DB.prepare(
+    "SELECT affiliation_id FROM organization_affiliations WHERE organization_id = ?"
+  )
+    .bind(organizationId)
+    .all<{ affiliation_id: string }>();
+  return new Set((rows.results ?? []).map((row) => row.affiliation_id));
+}
+
+async function getDirectUserAffiliationIds(env: Env, userId: string) {
+  const rows = await env.DB.prepare(
+    "SELECT affiliation_id FROM user_affiliations WHERE user_id = ?"
+  )
+    .bind(userId)
+    .all<{ affiliation_id: string }>();
+  return new Set((rows.results ?? []).map((row) => row.affiliation_id));
+}
+
+async function getOrganizationAffiliations(env: Env, organizationId: string) {
+  const rows = await env.DB.prepare(
+    `SELECT a.id, a.name, a.slug
+     FROM organization_affiliations oa
+     JOIN affiliations a ON a.id = oa.affiliation_id
+     WHERE oa.organization_id = ?
+     ORDER BY a.name`
+  )
+    .bind(organizationId)
+    .all<Affiliation>();
+  return rows.results ?? [];
+}
+
+async function getInheritedUserAffiliations(env: Env, userId: string) {
+  const rows = await env.DB.prepare(
+    `SELECT DISTINCT a.id, a.name, a.slug
+     FROM organization_memberships m
+     JOIN organization_affiliations oa ON oa.organization_id = m.organization_id
+     JOIN affiliations a ON a.id = oa.affiliation_id
+     WHERE m.user_id = ?
+     ORDER BY a.name`
+  )
+    .bind(userId)
+    .all<Affiliation>();
+  return rows.results ?? [];
+}
+
+async function getEffectiveUserAffiliations(env: Env, userId: string) {
+  const rows = await env.DB.prepare(
+    `SELECT DISTINCT a.id, a.name, a.slug
+     FROM affiliations a
+     WHERE EXISTS (
+       SELECT 1 FROM user_affiliations ua
+       WHERE ua.affiliation_id = a.id AND ua.user_id = ?
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM organization_memberships m
+       JOIN organization_affiliations oa ON oa.organization_id = m.organization_id
+       WHERE oa.affiliation_id = a.id AND m.user_id = ?
+     )
+     ORDER BY a.name`
+  )
+    .bind(userId, userId)
+    .all<Affiliation>();
+  return rows.results ?? [];
+}
+
+async function getEffectiveAffiliationsByUserIds(env: Env, userIds: string[]) {
+  const result = new Map<string, Affiliation[]>();
+  for (const userId of userIds) {
+    result.set(userId, await getEffectiveUserAffiliations(env, userId));
+  }
+  return result;
+}
+
+function renderAffiliationPicker(affiliations: Affiliation[], selectedIds: Set<string>) {
+  if (!affiliations.length) {
+    return `<span class="muted">No affiliations have been added yet.</span>`;
+  }
+  return String.raw`
+    <div class="tag-picker">
+      ${affiliations
+        .map((affiliation) => String.raw`
+          <label>
+            <input name="affiliation_id" type="checkbox" value="${escapeHtml(affiliation.id)}" ${selectedIds.has(affiliation.id) ? "checked" : ""} />
+            ${escapeHtml(affiliation.name)}
+          </label>
+        `)
+        .join("")}
+    </div>
+  `;
+}
+
+function renderAffiliationBadges(affiliations: Affiliation[]) {
+  if (!affiliations.length) {
+    return "";
+  }
+  return `<div class="meta">${affiliations.map((affiliation) => `<span class="badge">${escapeHtml(affiliation.name)}</span>`).join("")}</div>`;
+}
+
+function cleanAffiliationIds(form: FormData, affiliations: Affiliation[]) {
+  const allowed = new Set(affiliations.map((affiliation) => affiliation.id));
+  const selected = new Set<string>();
+  for (const value of form.getAll("affiliation_id")) {
+    if (typeof value === "string" && allowed.has(value)) {
+      selected.add(value);
+    }
+  }
+  return [...selected];
+}
+
+async function replaceOrganizationAffiliations(env: Env, organizationId: string, affiliationIds: string[]) {
+  const statements = [
+    env.DB.prepare("DELETE FROM organization_affiliations WHERE organization_id = ?").bind(organizationId),
+    ...affiliationIds.map((affiliationId) => env.DB.prepare(
+      "INSERT INTO organization_affiliations (organization_id, affiliation_id) VALUES (?, ?)"
+    ).bind(organizationId, affiliationId)),
+  ];
+  await env.DB.batch(statements);
+}
+
+async function replaceUserAffiliations(env: Env, userId: string, affiliationIds: string[]) {
+  const statements = [
+    env.DB.prepare("DELETE FROM user_affiliations WHERE user_id = ?").bind(userId),
+    ...affiliationIds.map((affiliationId) => env.DB.prepare(
+      "INSERT INTO user_affiliations (user_id, affiliation_id) VALUES (?, ?)"
+    ).bind(userId, affiliationId)),
+  ];
+  await env.DB.batch(statements);
+}
+
+function renderMemberProfileForm(
+  member: MemberProfile,
+  action: string,
+  includeAdminFields: boolean,
+  affiliations: Affiliation[] = [],
+  selectedAffiliationIds = new Set<string>(),
+  inheritedAffiliations: Affiliation[] = []
+) {
   return String.raw`
     <form method="post" action="${escapeHtml(action)}" enctype="multipart/form-data">
       <div class="profile-summary">
@@ -2170,6 +2393,16 @@ function renderMemberProfileForm(member: MemberProfile, action: string, includeA
         Bio
         <textarea name="bio" placeholder="Share what you work on, what you can help with, and what you want members to know.">${escapeHtml(member.bio || "")}</textarea>
       </label>
+      <div class="field-group">
+        <span>Direct affiliations</span>
+        ${renderAffiliationPicker(affiliations, selectedAffiliationIds)}
+      </div>
+      ${inheritedAffiliations.length ? String.raw`
+        <div class="notice">
+          Organization affiliations inherited from your memberships:
+          ${renderAffiliationBadges(inheritedAffiliations)}
+        </div>
+      ` : ""}
       <label>
         Profile visibility
         <select name="profile_visibility">
@@ -2257,6 +2490,11 @@ async function renderAdminUserProfile(env: Env, admin: User, userId: string) {
   )
     .bind(member.id)
     .all<{ name: string; slug: string; role: string }>();
+  const [affiliations, directAffiliationIds, inheritedAffiliations] = await Promise.all([
+    getAffiliations(env),
+    getDirectUserAffiliationIds(env, member.id),
+    getInheritedUserAffiliations(env, member.id),
+  ]);
   const membershipItems = memberships.results?.length
     ? memberships.results
         .map((membership) => `<li><strong><a href="/organizations/${escapeHtml(membership.slug)}">${escapeHtml(membership.name)}</a></strong><br /><span class="muted">${escapeHtml(formatRole(membership.role))}</span></li>`)
@@ -2287,7 +2525,7 @@ async function renderAdminUserProfile(env: Env, admin: User, userId: string) {
             <h2>Profile details</h2>
             <span class="badge">${member.id === admin.id ? "Your account" : "Editable"}</span>
           </div>
-          ${renderMemberProfileForm(member, `/admin/users/${member.id}`, true)}
+          ${renderMemberProfileForm(member, `/admin/users/${member.id}`, true, affiliations, directAffiliationIds, inheritedAffiliations)}
         </aside>
 
         <aside class="panel">
@@ -2324,6 +2562,8 @@ async function handleUpdateUserProfile(request: Request, env: Env, admin: User, 
   const siteRole = cleanSiteRole(form.get("site_role"));
   const status = cleanUserStatus(form.get("status"));
   const profile = readMemberProfileForm(form);
+  const affiliations = await getAffiliations(env);
+  const affiliationIds = cleanAffiliationIds(form, affiliations);
 
   if (!email || !siteRole || !status) {
     throw new HttpError(400, "Profile details required", "Enter a valid email, site role, and account status.");
@@ -2369,6 +2609,7 @@ async function handleUpdateUserProfile(request: Request, env: Env, admin: User, 
     status,
     profile_visibility: profile.profileVisibility,
   });
+  await replaceUserAffiliations(env, existing.id, affiliationIds);
 
   return redirect(`/admin/users/${existing.id}`);
 }
@@ -2416,6 +2657,11 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
   }
 
   const canEdit = user.site_role === "site_admin" || membership?.role === "org_admin";
+  const [affiliations, organizationAffiliationIds, organizationAffiliations] = await Promise.all([
+    getAffiliations(env),
+    getOrganizationAffiliationIds(env, organization.id),
+    getOrganizationAffiliations(env, organization.id),
+  ]);
   const members = await env.DB.prepare(
     `SELECT u.id, u.name, u.email, m.role
      FROM organization_memberships m
@@ -2445,6 +2691,7 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
             ${organization.contact_email ? `<span>${escapeHtml(organization.contact_email)}</span>` : ""}
             ${organization.website_url ? `<span>${escapeHtml(organization.website_url)}</span>` : ""}
           </div>
+          ${renderAffiliationBadges(organizationAffiliations)}
         </div>
         ${user.site_role === "site_admin" ? `<div class="stack"><a class="button secondary" href="/admin">Admin tools</a></div>` : ""}
       </div>
@@ -2470,7 +2717,7 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
 
       ${canEdit ? renderPendingEventReview(pendingEvents, `/organizations/${organization.slug}`) : ""}
 
-      ${canEdit ? renderOrganizationEditForm(organization) : ""}
+      ${canEdit ? renderOrganizationEditForm(organization, affiliations, organizationAffiliationIds) : ""}
     </section>
   `, user);
 }
@@ -2486,7 +2733,7 @@ function renderOrganizationEditForm(organization: {
   event_source_url: string | null;
   event_parser: string | null;
   event_scraping_enabled: number;
-}) {
+}, affiliations: Affiliation[] = [], selectedAffiliationIds = new Set<string>()) {
   return String.raw`
     <section class="panel">
       <div class="panel-head">
@@ -2529,6 +2776,10 @@ function renderOrganizationEditForm(organization: {
           Summary
           <textarea name="summary">${escapeHtml(organization.summary || "")}</textarea>
         </label>
+        <div class="field-group">
+          <span>Affiliations</span>
+          ${renderAffiliationPicker(affiliations, selectedAffiliationIds)}
+        </div>
         <label>
           Description
           <textarea name="description">${escapeHtml(organization.description || "")}</textarea>
@@ -2569,6 +2820,8 @@ async function handleUpdateOrganization(request: Request, env: Env, user: User, 
   const eventParser = cleanEventParser(form.get("event_parser"));
   const eventScrapingEnabled = form.get("event_scraping_enabled") === "1" && Boolean(eventSourceUrl && eventParser);
   const logoObjectKey = await uploadOrganizationLogo(env, organization.id, form.get("logo"), organization.logo_object_key);
+  const affiliations = await getAffiliations(env);
+  const affiliationIds = cleanAffiliationIds(form, affiliations);
 
   if (!name) {
     throw new HttpError(400, "Organization name required", "The organization name cannot be blank.");
@@ -2583,6 +2836,7 @@ async function handleUpdateOrganization(request: Request, env: Env, user: User, 
     .bind(name, contactEmail || null, websiteUrl || null, summary || null, description || null,
       logoObjectKey || null, eventSourceUrl || null, eventParser || null, eventScrapingEnabled ? 1 : 0, new Date().toISOString(), organization.id)
     .run();
+  await replaceOrganizationAffiliations(env, organization.id, affiliationIds);
 
   await writeAudit(env, user.id, "organization.updated", "organization", organization.id, { slug: organization.slug });
   return redirect(`/organizations/${organization.slug}`);
@@ -2598,6 +2852,8 @@ async function handleCreateOrganization(request: Request, env: Env, user: User) 
   const eventParser = cleanEventParser(form.get("event_parser"));
   const eventScrapingEnabled = form.get("event_scraping_enabled") === "1" && Boolean(eventSourceUrl && eventParser);
   const slug = slugify(slugInput || name);
+  const affiliations = await getAffiliations(env);
+  const affiliationIds = cleanAffiliationIds(form, affiliations);
 
   if (!name || !slug) {
     throw new HttpError(400, "Organization details required", "Organization name is required.");
@@ -2610,6 +2866,7 @@ async function handleCreateOrganization(request: Request, env: Env, user: User) 
   )
     .bind(organizationId, name, slug, summary || null, contactEmail || null, eventSourceUrl || null, eventParser || null, eventScrapingEnabled ? 1 : 0)
     .run();
+  await replaceOrganizationAffiliations(env, organizationId, affiliationIds);
 
   await writeAudit(env, user.id, "organization.created", "organization", organizationId, { name, slug });
   return redirect("/admin");
@@ -2689,6 +2946,29 @@ async function handleAdminInvite(request: Request, env: Env, user: User) {
     role,
   });
 
+  return redirect("/admin");
+}
+
+async function handleCreateAffiliation(request: Request, env: Env, user: User) {
+  const form = await request.formData();
+  const name = cleanText(form.get("name"), 160);
+  const slug = slugify(name);
+  if (!name || !slug) {
+    throw new HttpError(400, "Affiliation name required", "Enter a coalition, consortium, or convening name.");
+  }
+
+  const affiliationId = `affiliation:${slug}`;
+  try {
+    await env.DB.prepare(
+      "INSERT INTO affiliations (id, name, slug) VALUES (?, ?, ?)"
+    )
+      .bind(affiliationId, name, slug)
+      .run();
+  } catch {
+    throw new HttpError(400, "Affiliation already exists", "An affiliation with that name already exists.");
+  }
+
+  await writeAudit(env, user.id, "affiliation.created", "affiliation", affiliationId, { name, slug });
   return redirect("/admin");
 }
 

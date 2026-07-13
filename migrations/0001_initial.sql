@@ -48,6 +48,32 @@ CREATE TABLE organization_memberships (
   PRIMARY KEY (organization_id, user_id)
 );
 
+CREATE TABLE affiliations (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  slug TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE organization_affiliations (
+  organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  affiliation_id TEXT NOT NULL REFERENCES affiliations(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (organization_id, affiliation_id)
+);
+
+CREATE TABLE user_affiliations (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  affiliation_id TEXT NOT NULL REFERENCES affiliations(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, affiliation_id)
+);
+
+INSERT INTO affiliations (id, name, slug) VALUES
+  ('affiliation:progressive-legislative-coalition', 'Progressive Legislative Coalition', 'progressive-legislative-coalition'),
+  ('affiliation:nh-progressive-power-convening', 'NH Progressive Power Convening', 'nh-progressive-power-convening'),
+  ('affiliation:nh-queer-consortium', 'NH Queer Consortium', 'nh-queer-consortium');
+
 CREATE TABLE invitations (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL,
@@ -137,6 +163,8 @@ CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 CREATE INDEX idx_users_profile_visibility ON users(profile_visibility, name);
 CREATE INDEX idx_memberships_user_id ON organization_memberships(user_id);
+CREATE INDEX idx_organization_affiliations_affiliation_id ON organization_affiliations(affiliation_id);
+CREATE INDEX idx_user_affiliations_affiliation_id ON user_affiliations(affiliation_id);
 CREATE INDEX idx_posts_section_created_at ON posts(section, created_at DESC);
 CREATE INDEX idx_posts_organization_id ON posts(organization_id);
 CREATE INDEX idx_comments_post_id_created_at ON comments(post_id, created_at);
