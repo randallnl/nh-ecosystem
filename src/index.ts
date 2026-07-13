@@ -754,6 +754,70 @@ const baseStyles = String.raw`
     margin: 0;
   }
 
+  .comment-preview {
+    display: grid;
+    gap: 6px;
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(154, 184, 217, 0.28);
+  }
+
+  .comment-preview p {
+    margin: 0;
+    color: #314c69;
+    font-size: 0.88rem;
+    line-height: 1.42;
+  }
+
+  .event-filter-form {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.7fr) minmax(180px, 1fr) minmax(180px, 1.2fr) auto;
+    gap: 10px;
+    align-items: end;
+    margin-top: 0;
+  }
+
+  .event-card-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .event-card {
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 14px;
+    padding: 14px;
+    border: 1px solid rgba(154, 184, 217, 0.48);
+    border-radius: var(--radius-lg);
+    background: rgba(255, 255, 255, 0.76);
+    box-shadow: 0 18px 46px rgba(31, 82, 135, 0.1);
+  }
+
+  .event-datebox {
+    display: grid;
+    align-content: center;
+    min-height: 82px;
+    border-radius: var(--radius-md);
+    color: #ffffff;
+    background: linear-gradient(160deg, var(--accent), #2f7fc5);
+    text-align: center;
+  }
+
+  .event-datebox span {
+    font-size: 0.76rem;
+    font-weight: 850;
+    text-transform: uppercase;
+  }
+
+  .event-datebox strong {
+    font-size: 1.8rem;
+    line-height: 1;
+  }
+
   .review-actions {
     display: flex;
     flex-wrap: wrap;
@@ -822,6 +886,11 @@ const baseStyles = String.raw`
     .event-detail-body {
       grid-template-columns: 1fr;
     }
+
+    .event-filter-form,
+    .event-card-list {
+      grid-template-columns: 1fr;
+    }
   }
 
   @media (max-width: 620px) {
@@ -849,6 +918,10 @@ const baseStyles = String.raw`
 
     .list-thumb {
       height: 135px;
+    }
+
+    .event-card {
+      grid-template-columns: 1fr;
     }
   }
 `;
@@ -974,7 +1047,7 @@ export default {
       const section = sectionFromPath(url.pathname);
       if (request.method === "GET" && section) {
         const user = requireUser(session.user);
-        return html(await renderSectionPage(env, user, section));
+        return html(await renderSectionPage(env, user, section, url.searchParams));
       }
 
       if (request.method === "POST" && url.pathname === "/posts") {
@@ -1280,13 +1353,13 @@ async function renderApp(env: Env, user: User) {
   `, user);
 }
 
-async function renderSectionPage(env: Env, user: User, section: string) {
+async function renderSectionPage(env: Env, user: User, section: string, searchParams = new URLSearchParams()) {
   const meta = sectionMeta(section);
   const [posts, writableOrganizations] = await Promise.all([
     env.DB.prepare(
       `SELECT p.id, p.title, p.body, p.created_at, p.organization_id, o.name AS organization_name, o.slug AS organization_slug,
         o.logo_object_key AS organization_logo_object_key, u.id AS author_user_id, u.name AS author_name, u.email AS author_email,
-        e.image_url,
+        e.image_url, e.starts_at, e.location_name,
         (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'published') AS comment_count
        FROM posts p
        LEFT JOIN organizations o ON o.id = p.organization_id
@@ -1308,15 +1381,21 @@ async function renderSectionPage(env: Env, user: User, section: string) {
       author_name: string | null;
       author_email: string;
       image_url: string | null;
+      starts_at: string | null;
+      location_name: string | null;
       comment_count: number;
     }>(),
     getWritableOrganizations(env, user),
   ]);
-  const visiblePosts = (await filterVisiblePosts(env, user, posts.results ?? [])).slice(0, 40);
+  const visibleUnfilteredPosts = await filterVisiblePosts(env, user, posts.results ?? []);
+  const visiblePosts = applySectionFilters(visibleUnfilteredPosts, section, searchParams).slice(0, 40);
+  const commentPreviewMap = await getCommentPreviews(env, user, visiblePosts.map((post) => post.id));
 
   const canCreate = user.site_role === "site_admin" || writableOrganizations.length > 0;
   const postItems = visiblePosts.length
-    ? visiblePosts
+    ? section === "event"
+      ? visiblePosts.map((post) => renderEventFeedCard(post, commentPreviewMap.get(post.id) ?? [])).join("")
+      : visiblePosts
         .map((post) => String.raw`
           <li class="${post.image_url ? "with-image" : ""}">
             ${post.image_url ? `<img class="list-thumb" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
@@ -1329,6 +1408,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
                 <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
                 <span class="badge">${Number(post.comment_count)} comments</span>
               </div>
+              ${renderCommentPreviews(commentPreviewMap.get(post.id) ?? [])}
             </div>
           </li>
         `)
@@ -1356,12 +1436,14 @@ async function renderSectionPage(env: Env, user: User, section: string) {
           ${canCreate ? renderPostForm(section, writableOrganizations, user) : `<p class="muted">Ask an organization admin or site admin to give you contributor access before posting.</p>`}
         </aside>
 
+        ${section === "event" ? renderEventFilters(visibleUnfilteredPosts, searchParams) : ""}
+
         <aside class="panel">
           <div class="panel-head">
             <h2>Recent ${escapeHtml(meta.pluralLower)}</h2>
             <span class="badge">${visiblePosts.length} shown</span>
           </div>
-          <ul class="compact-list">${postItems}</ul>
+          <ul class="${section === "event" ? "event-card-list" : "compact-list"}">${postItems}</ul>
         </aside>
       </section>
     </section>
@@ -1391,6 +1473,171 @@ function renderHeroPreviews(
         .join("")}
     </div>
   `;
+}
+
+type FeedPost = {
+  id: string;
+  title: string;
+  body: string;
+  created_at: string;
+  organization_id: string | null;
+  organization_name: string | null;
+  organization_slug: string | null;
+  organization_logo_object_key: string | null;
+  author_user_id: string;
+  author_name: string | null;
+  author_email: string;
+  image_url: string | null;
+  starts_at: string | null;
+  location_name: string | null;
+  comment_count: number;
+};
+
+type CommentPreview = {
+  id: string;
+  body: string;
+  created_at: string;
+  author_user_id: string;
+  author_name: string | null;
+  author_email: string;
+};
+
+function applySectionFilters<T extends FeedPost>(posts: T[], section: string, searchParams: URLSearchParams) {
+  if (section !== "event") {
+    return posts;
+  }
+
+  const range = searchParams.get("range") || "upcoming";
+  const organization = searchParams.get("organization") || "";
+  const query = (searchParams.get("q") || "").trim().toLowerCase();
+  const now = new Date();
+
+  return posts.filter((post) => {
+    const eventDate = post.starts_at ? new Date(post.starts_at) : null;
+    if (range === "upcoming" && eventDate && eventDate < startOfToday(now)) {
+      return false;
+    }
+    if (range === "past" && (!eventDate || eventDate >= startOfToday(now))) {
+      return false;
+    }
+    if (organization && post.organization_id !== organization) {
+      return false;
+    }
+    if (query) {
+      const haystack = `${post.title} ${post.body} ${post.organization_name || ""} ${post.location_name || ""}`.toLowerCase();
+      if (!haystack.includes(query)) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function renderEventFilters(posts: FeedPost[], searchParams: URLSearchParams) {
+  const range = searchParams.get("range") || "upcoming";
+  const organization = searchParams.get("organization") || "";
+  const query = searchParams.get("q") || "";
+  const organizations = [...new Map(
+    posts
+      .filter((post) => post.organization_id && post.organization_name)
+      .map((post) => [post.organization_id, post.organization_name])
+  ).entries()];
+
+  return String.raw`
+    <aside class="panel">
+      <div class="panel-head">
+        <h2>Filter events</h2>
+        <span class="badge">Calendar view</span>
+      </div>
+      <form class="event-filter-form" method="get" action="/events">
+        <label>
+          Date
+          <select name="range">
+            <option value="upcoming" ${range === "upcoming" ? "selected" : ""}>Upcoming</option>
+            <option value="all" ${range === "all" ? "selected" : ""}>All</option>
+            <option value="past" ${range === "past" ? "selected" : ""}>Past</option>
+          </select>
+        </label>
+        <label>
+          Organization
+          <select name="organization">
+            <option value="">All affiliated orgs</option>
+            ${organizations.map(([id, name]) => `<option value="${escapeHtml(id || "")}" ${organization === id ? "selected" : ""}>${escapeHtml(name || "")}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          Search
+          <input name="q" type="search" value="${escapeHtml(query)}" placeholder="Title, location, organization" />
+        </label>
+        <button class="secondary" type="submit">Apply</button>
+      </form>
+    </aside>
+  `;
+}
+
+function renderEventFeedCard(post: FeedPost, comments: CommentPreview[]) {
+  return String.raw`
+    <li class="event-card">
+      <div class="event-datebox">
+        <span>${escapeHtml(eventMonth(post.starts_at))}</span>
+        <strong>${escapeHtml(eventDay(post.starts_at))}</strong>
+      </div>
+      <div class="list-copy">
+        <strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong>
+        <p class="muted">${escapeHtml(excerpt(post.body, 150))}</p>
+        <div class="meta">
+          ${post.organization_name ? renderOrganizationPill(post.organization_name, post.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
+          ${post.starts_at ? `<span class="badge">${escapeHtml(formatDate(post.starts_at))}</span>` : ""}
+          ${post.location_name ? `<span class="badge">${escapeHtml(post.location_name)}</span>` : ""}
+          <span class="badge">${Number(post.comment_count)} comments</span>
+        </div>
+        ${renderCommentPreviews(comments)}
+      </div>
+    </li>
+  `;
+}
+
+async function getCommentPreviews(env: Env, user: User, postIds: string[]) {
+  const previews = new Map<string, CommentPreview[]>();
+  for (const postId of postIds) {
+    const comments = await env.DB.prepare(
+      `SELECT c.id, c.body, c.created_at, u.id AS author_user_id, u.name AS author_name, u.email AS author_email
+       FROM comments c
+       JOIN users u ON u.id = c.author_user_id
+       WHERE c.post_id = ? AND c.status = 'published'
+       ORDER BY c.created_at DESC
+       LIMIT 4`
+    )
+      .bind(postId)
+      .all<CommentPreview>();
+    previews.set(postId, (await filterVisiblePeopleRows(env, user, comments.results ?? [], (comment) => comment.author_user_id)).slice(0, 2));
+  }
+  return previews;
+}
+
+function renderCommentPreviews(comments: CommentPreview[]) {
+  if (!comments.length) {
+    return "";
+  }
+  return String.raw`
+    <div class="comment-preview">
+      ${comments.map((comment) => `<p><strong>${renderMemberLink(comment.author_user_id, comment.author_name || comment.author_email)}</strong>: ${escapeHtml(excerpt(comment.body, 110))}</p>`).join("")}
+    </div>
+  `;
+}
+
+function eventMonth(value: string | null) {
+  if (!value) return "TBD";
+  return new Intl.DateTimeFormat("en-US", { month: "short" }).format(new Date(value));
+}
+
+function eventDay(value: string | null) {
+  if (!value) return "--";
+  return new Intl.DateTimeFormat("en-US", { day: "2-digit" }).format(new Date(value));
+}
+
+function startOfToday(now = new Date()) {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 }
 
 function renderPostForm(section: string, organizations: Array<{ id: string; name: string }>, user: User) {
