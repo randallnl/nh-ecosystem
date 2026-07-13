@@ -1192,23 +1192,28 @@ async function renderApp(env: Env, user: User) {
     .bind(user.id)
     .all<{ name: string; slug: string; summary: string | null; contact_email: string | null; website_url: string | null; logo_object_key: string | null; role: string }>();
 
-  const postCounts = await env.DB.prepare(
-    `SELECT section, COUNT(*) AS count
-     FROM posts
-     WHERE status = 'published'
-     GROUP BY section`
-  ).all<{ section: string; count: number }>();
+  const postRows = await env.DB.prepare(
+    `SELECT p.id, p.section, p.author_user_id, p.organization_id
+     FROM posts p
+     WHERE p.status = 'published'`
+  ).all<{ id: string; section: string; author_user_id: string; organization_id: string | null }>();
   const recentPosts = await env.DB.prepare(
-    `SELECT p.id, p.section, p.title, p.body, p.created_at, o.name AS organization_name, o.logo_object_key AS organization_logo_object_key,
+    `SELECT p.id, p.section, p.title, p.body, p.created_at, p.author_user_id, p.organization_id,
+      o.name AS organization_name, o.logo_object_key AS organization_logo_object_key,
       (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'published') AS comment_count
      FROM posts p
      LEFT JOIN organizations o ON o.id = p.organization_id
      WHERE p.status = 'published'
      ORDER BY comment_count DESC, p.created_at DESC
-     LIMIT 6`
-  ).all<{ id: string; section: string; title: string; body: string; created_at: string; organization_name: string | null; organization_logo_object_key: string | null; comment_count: number }>();
+     LIMIT 80`
+  ).all<{ id: string; section: string; title: string; body: string; created_at: string; author_user_id: string; organization_id: string | null; organization_name: string | null; organization_logo_object_key: string | null; comment_count: number }>();
 
-  const countBySection = new Map(postCounts.results?.map((row) => [row.section, row.count]) ?? []);
+  const visiblePostRows = await filterVisiblePosts(env, user, postRows.results ?? []);
+  const countBySection = new Map<string, number>();
+  for (const post of visiblePostRows) {
+    countBySection.set(post.section, (countBySection.get(post.section) ?? 0) + 1);
+  }
+  const visibleRecentPosts = (await filterVisiblePosts(env, user, recentPosts.results ?? [])).slice(0, 6);
   const orgCards = memberships.results?.length
     ? memberships.results
         .map((membership) => String.raw`
@@ -1226,12 +1231,12 @@ async function renderApp(env: Env, user: User) {
         `)
         .join("")
     : `<div class="tile"><strong>No organization memberships yet</strong><span>A site admin can attach your account to an organization.</span></div>`;
-  const recentPostItems = recentPosts.results?.length
-    ? recentPosts.results
+  const recentPostItems = visibleRecentPosts.length
+    ? visibleRecentPosts
         .map((post) => `<li><strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong><br /><span class="muted">${escapeHtml(sectionLabel(post.section))}${post.organization_name ? ` · ${escapeHtml(post.organization_name)}` : ""} · ${escapeHtml(formatDate(post.created_at))}</span></li>`)
         .join("")
-    : `<li><strong>No posts yet</strong><br /><span class="muted">Create the first legislation note, event, project, or update from a section page.</span></li>`;
-  const heroPreviews = renderHeroPreviews(recentPosts.results ?? []);
+    : `<li><strong>No posts in your affiliations yet</strong><br /><span class="muted">Posts appear here when people or organizations in your affiliations publish.</span></li>`;
+  const heroPreviews = renderHeroPreviews(visibleRecentPosts);
 
   return layout("Member dashboard", String.raw`
     <section class="dashboard">
@@ -1259,7 +1264,7 @@ async function renderApp(env: Env, user: User) {
       <aside class="panel">
         <div class="panel-head">
           <h2>Recent activity</h2>
-          <span class="badge">${recentPosts.results?.length ?? 0} shown</span>
+          <span class="badge">${visibleRecentPosts.length} shown</span>
         </div>
         <ul class="compact-list">${recentPostItems}</ul>
       </aside>
@@ -1289,7 +1294,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
        JOIN users u ON u.id = p.author_user_id
        WHERE p.section = ? AND p.status = 'published'
        ORDER BY p.created_at DESC
-       LIMIT 40`
+       LIMIT 200`
     ).bind(section).all<{
       id: string;
       title: string;
@@ -1307,10 +1312,11 @@ async function renderSectionPage(env: Env, user: User, section: string) {
     }>(),
     getWritableOrganizations(env, user),
   ]);
+  const visiblePosts = (await filterVisiblePosts(env, user, posts.results ?? [])).slice(0, 40);
 
   const canCreate = user.site_role === "site_admin" || writableOrganizations.length > 0;
-  const postItems = posts.results?.length
-    ? posts.results
+  const postItems = visiblePosts.length
+    ? visiblePosts
         .map((post) => String.raw`
           <li class="${post.image_url ? "with-image" : ""}">
             ${post.image_url ? `<img class="list-thumb" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
@@ -1327,8 +1333,8 @@ async function renderSectionPage(env: Env, user: User, section: string) {
           </li>
         `)
         .join("")
-    : `<li><strong>No ${escapeHtml(meta.pluralLower)} yet</strong><br /><span class="muted">When members publish here, the latest posts will appear in this section.</span></li>`;
-  const heroPreviews = renderHeroPreviews(posts.results ?? []);
+    : `<li><strong>No ${escapeHtml(meta.pluralLower)} in your affiliations yet</strong><br /><span class="muted">When affiliated members or organizations publish here, the latest posts will appear in this section.</span></li>`;
+  const heroPreviews = renderHeroPreviews(visiblePosts);
 
   return layout(meta.title, String.raw`
     <section class="dashboard content-page">
@@ -1353,7 +1359,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
         <aside class="panel">
           <div class="panel-head">
             <h2>Recent ${escapeHtml(meta.pluralLower)}</h2>
-            <span class="badge">${posts.results?.length ?? 0} shown</span>
+            <span class="badge">${visiblePosts.length} shown</span>
           </div>
           <ul class="compact-list">${postItems}</ul>
         </aside>
@@ -1458,6 +1464,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
   }
 
   await requireCanReadPost(env, user, post.organization_id, post.visibility);
+  await requireCanViewPostAudience(env, user, post.author_user_id, post.organization_id);
   const canEditEvent = post.section === "event" && await canManageEvent(env, user, post.organization_id);
 
   const comments = await env.DB.prepare(
@@ -1469,8 +1476,9 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
   )
     .bind(post.id)
     .all<{ id: string; body: string; created_at: string; author_user_id: string; author_name: string | null; author_email: string }>();
-  const commentItems = comments.results?.length
-    ? comments.results
+  const visibleComments = await filterVisiblePeopleRows(env, user, comments.results ?? [], (comment) => comment.author_user_id);
+  const commentItems = visibleComments.length
+    ? visibleComments
         .map((comment) => `<li><strong>${renderMemberLink(comment.author_user_id, comment.author_name || comment.author_email)}</strong><br /><span class="muted">${escapeHtml(formatDate(comment.created_at))}</span><p class="post-body">${escapeHtml(comment.body)}</p></li>`)
         .join("")
     : `<li><strong>No comments yet</strong><br /><span class="muted">Start the discussion below.</span></li>`;
@@ -1524,7 +1532,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
         <aside class="panel">
           <div class="panel-head">
             <h2>Comments</h2>
-            <span class="badge">${comments.results?.length ?? 0} total</span>
+            <span class="badge">${visibleComments.length} shown</span>
           </div>
           <ul class="compact-list">${commentItems}</ul>
         </aside>
@@ -1783,15 +1791,16 @@ async function handleCreatePost(request: Request, env: Env, user: User) {
 }
 
 async function handleCreateComment(request: Request, env: Env, user: User, postId: string) {
-  const post = await env.DB.prepare("SELECT id, organization_id, visibility, status FROM posts WHERE id = ?")
+  const post = await env.DB.prepare("SELECT id, author_user_id, organization_id, visibility, status FROM posts WHERE id = ?")
     .bind(postId)
-    .first<{ id: string; organization_id: string | null; visibility: string; status: string }>();
+    .first<{ id: string; author_user_id: string; organization_id: string | null; visibility: string; status: string }>();
 
   if (!post || post.status !== "published") {
     throw new HttpError(404, "Post not found", "That post does not exist or is not published.");
   }
 
   await requireCanReadPost(env, user, post.organization_id, post.visibility);
+  await requireCanViewPostAudience(env, user, post.author_user_id, post.organization_id);
 
   const form = await request.formData();
   const body = cleanText(form.get("body"), 3000);
@@ -2019,9 +2028,10 @@ async function renderMemberDirectory(env: Env, user: User) {
     organizations: string | null;
   }>();
 
-  const affiliationMap = await getEffectiveAffiliationsByUserIds(env, (members.results ?? []).map((member) => member.id));
-  const renderedMemberItems = members.results?.length
-    ? members.results
+  const visibleMembers = await filterVisiblePeopleRows(env, user, members.results ?? [], (member) => member.id);
+  const affiliationMap = await getEffectiveAffiliationsByUserIds(env, visibleMembers.map((member) => member.id));
+  const renderedMemberItems = visibleMembers.length
+    ? visibleMembers
         .map((member) => String.raw`
           <div class="tile member-card">
             ${renderAvatar(member.name || member.email, member.avatar_object_key)}
@@ -2038,7 +2048,7 @@ async function renderMemberDirectory(env: Env, user: User) {
           </div>
         `)
         .join("")
-    : `<div class="tile"><strong>No member profiles yet</strong><span>Profiles appear here when members make them visible.</span></div>`;
+    : `<div class="tile"><strong>No member profiles in your affiliations yet</strong><span>Profiles appear here when members in your affiliations make them visible.</span></div>`;
 
   return layout("Members", String.raw`
     <section class="dashboard">
@@ -2065,6 +2075,7 @@ async function renderMemberProfile(env: Env, user: User, memberId: string) {
   if (!member || member.status !== "active") {
     throw new HttpError(404, "Member not found", "That member profile does not exist or is not visible.");
   }
+  await requireCanViewMemberProfile(env, user, member.id);
 
   const memberships = await getMemberOrganizations(env, member.id);
   const affiliations = await getEffectiveUserAffiliations(env, member.id);
@@ -2282,12 +2293,88 @@ async function getEffectiveUserAffiliations(env: Env, userId: string) {
   return rows.results ?? [];
 }
 
+async function getEffectiveUserAffiliationIds(env: Env, userId: string) {
+  return new Set((await getEffectiveUserAffiliations(env, userId)).map((affiliation) => affiliation.id));
+}
+
 async function getEffectiveAffiliationsByUserIds(env: Env, userIds: string[]) {
   const result = new Map<string, Affiliation[]>();
   for (const userId of userIds) {
     result.set(userId, await getEffectiveUserAffiliations(env, userId));
   }
   return result;
+}
+
+async function getOrganizationAffiliationsByIds(env: Env, organizationIds: string[]) {
+  const result = new Map<string, Affiliation[]>();
+  for (const organizationId of [...new Set(organizationIds.filter(Boolean))]) {
+    result.set(organizationId, await getOrganizationAffiliations(env, organizationId));
+  }
+  return result;
+}
+
+function hasAffiliationOverlap(viewerAffiliationIds: Set<string>, affiliations: Affiliation[]) {
+  return affiliations.some((affiliation) => viewerAffiliationIds.has(affiliation.id));
+}
+
+async function filterVisiblePosts<T extends { author_user_id: string; organization_id: string | null }>(env: Env, user: User, posts: T[]) {
+  if (user.site_role === "site_admin") {
+    return posts;
+  }
+  const viewerAffiliationIds = await getEffectiveUserAffiliationIds(env, user.id);
+  const authorAffiliations = await getEffectiveAffiliationsByUserIds(env, [...new Set(posts.map((post) => post.author_user_id))]);
+  const organizationAffiliations = await getOrganizationAffiliationsByIds(env, posts.map((post) => post.organization_id || ""));
+  return posts.filter((post) => {
+    if (post.author_user_id === user.id) {
+      return true;
+    }
+    if (!viewerAffiliationIds.size) {
+      return false;
+    }
+    return hasAffiliationOverlap(viewerAffiliationIds, authorAffiliations.get(post.author_user_id) ?? [])
+      || (post.organization_id ? hasAffiliationOverlap(viewerAffiliationIds, organizationAffiliations.get(post.organization_id) ?? []) : false);
+  });
+}
+
+async function filterVisiblePeopleRows<T>(env: Env, user: User, rows: T[], getUserId: (row: T) => string) {
+  if (user.site_role === "site_admin") {
+    return rows;
+  }
+  const viewerAffiliationIds = await getEffectiveUserAffiliationIds(env, user.id);
+  const userIds = [...new Set(rows.map(getUserId))];
+  const affiliationMap = await getEffectiveAffiliationsByUserIds(env, userIds);
+  return rows.filter((row) => {
+    const userId = getUserId(row);
+    return userId === user.id || (viewerAffiliationIds.size > 0 && hasAffiliationOverlap(viewerAffiliationIds, affiliationMap.get(userId) ?? []));
+  });
+}
+
+async function canViewOrganizationByAffiliation(env: Env, user: User, organizationId: string) {
+  if (user.site_role === "site_admin") {
+    return true;
+  }
+  const viewerAffiliationIds = await getEffectiveUserAffiliationIds(env, user.id);
+  if (!viewerAffiliationIds.size) {
+    return false;
+  }
+  return hasAffiliationOverlap(viewerAffiliationIds, await getOrganizationAffiliations(env, organizationId));
+}
+
+async function requireCanViewMemberProfile(env: Env, user: User, memberId: string) {
+  if (user.site_role === "site_admin" || user.id === memberId) {
+    return;
+  }
+  const visible = await filterVisiblePeopleRows(env, user, [{ id: memberId }], (row) => row.id);
+  if (!visible.length) {
+    throw new HttpError(403, "Affiliation access required", "You need a shared affiliation with this member to view their profile.");
+  }
+}
+
+async function requireCanViewPostAudience(env: Env, user: User, authorUserId: string, organizationId: string | null) {
+  const visible = await filterVisiblePosts(env, user, [{ author_user_id: authorUserId, organization_id: organizationId }]);
+  if (!visible.length) {
+    throw new HttpError(404, "Post not found", "That post does not exist in your affiliations.");
+  }
 }
 
 function renderAffiliationPicker(affiliations: Affiliation[], selectedIds: Set<string>) {
@@ -2652,16 +2739,16 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
     .bind(organization.id, user.id)
     .first<{ role: string }>();
 
-  if (!membership && user.site_role !== "site_admin") {
-    throw new HttpError(403, "Members only", "You need to belong to this organization to view its profile.");
-  }
-
   const canEdit = user.site_role === "site_admin" || membership?.role === "org_admin";
   const [affiliations, organizationAffiliationIds, organizationAffiliations] = await Promise.all([
     getAffiliations(env),
     getOrganizationAffiliationIds(env, organization.id),
     getOrganizationAffiliations(env, organization.id),
   ]);
+
+  if (!membership && user.site_role !== "site_admin" && !await canViewOrganizationByAffiliation(env, user, organization.id)) {
+    throw new HttpError(403, "Affiliation access required", "You need a shared affiliation with this organization to view its profile.");
+  }
   const members = await env.DB.prepare(
     `SELECT u.id, u.name, u.email, m.role
      FROM organization_memberships m
