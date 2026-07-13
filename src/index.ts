@@ -788,7 +788,7 @@ const baseStyles = String.raw`
 
   .event-card {
     display: grid;
-    grid-template-columns: 76px 128px minmax(0, 1fr);
+    grid-template-columns: 128px minmax(0, 1fr);
     gap: 14px;
     padding: 14px;
     border: 1px solid rgba(154, 184, 217, 0.48);
@@ -798,7 +798,13 @@ const baseStyles = String.raw`
   }
 
   .event-card.no-image {
-    grid-template-columns: 76px minmax(0, 1fr);
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .event-card-media {
+    display: grid;
+    gap: 8px;
+    align-self: start;
   }
 
   .event-card-image {
@@ -813,21 +819,23 @@ const baseStyles = String.raw`
   .event-datebox {
     display: grid;
     align-content: center;
-    min-height: 82px;
-    border-radius: var(--radius-md);
+    justify-content: center;
+    min-height: 48px;
+    padding: 6px 8px;
+    border-radius: var(--radius-pill);
     color: #ffffff;
     background: linear-gradient(160deg, var(--accent), #2f7fc5);
     text-align: center;
   }
 
   .event-datebox span {
-    font-size: 0.76rem;
+    font-size: 0.66rem;
     font-weight: 850;
     text-transform: uppercase;
   }
 
   .event-datebox strong {
-    font-size: 1.8rem;
+    font-size: 1.08rem;
     line-height: 1;
   }
 
@@ -941,6 +949,10 @@ const baseStyles = String.raw`
     .event-card-image {
       width: 100%;
       height: 150px;
+    }
+
+    .event-card.no-image .event-datebox {
+      width: min(92px, 100%);
     }
   }
 `;
@@ -1597,11 +1609,13 @@ function renderEventFilters(posts: FeedPost[], searchParams: URLSearchParams) {
 function renderEventFeedCard(post: FeedPost, comments: CommentPreview[]) {
   return String.raw`
     <li class="event-card${post.image_url ? "" : " no-image"}">
-      <div class="event-datebox">
-        <span>${escapeHtml(eventMonth(post.starts_at))}</span>
-        <strong>${escapeHtml(eventDay(post.starts_at))}</strong>
+      <div class="event-card-media">
+        <div class="event-datebox">
+          <span>${escapeHtml(eventMonth(post.starts_at))}</span>
+          <strong>${escapeHtml(eventDay(post.starts_at))}</strong>
+        </div>
+        ${post.image_url ? `<img class="event-card-image" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
       </div>
-      ${post.image_url ? `<img class="event-card-image" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
       <div class="list-copy">
         <strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong>
         <p class="muted">${escapeHtml(excerpt(post.body, 150))}</p>
