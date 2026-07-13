@@ -811,9 +811,10 @@ const baseStyles = String.raw`
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const session = await getSession(request, env);
 
     try {
+      const session = await getSession(request, env);
+
       if (request.method === "GET" && url.pathname === "/health") {
         return json({ ok: true, authenticated: Boolean(session.user) });
       }
@@ -3115,7 +3116,7 @@ async function requireCanManageEvent(env: Env, user: User, organizationId: strin
 }
 
 async function uploadOrganizationLogo(env: Env, organizationId: string, value: FormDataEntryValue | null, currentKey: string | null) {
-  if (!(value instanceof File) || value.size === 0) {
+  if (!isUploadedFile(value)) {
     return currentKey;
   }
 
@@ -3141,7 +3142,7 @@ async function uploadOrganizationLogo(env: Env, organizationId: string, value: F
 }
 
 async function uploadProfilePhoto(env: Env, userId: string, value: FormDataEntryValue | null, currentKey: string | null) {
-  if (!(value instanceof File) || value.size === 0) {
+  if (!isUploadedFile(value)) {
     return currentKey;
   }
 
@@ -3164,6 +3165,18 @@ async function uploadProfilePhoto(env: Env, userId: string, value: FormDataEntry
     httpMetadata: { contentType: value.type },
   });
   return key;
+}
+
+function isUploadedFile(value: FormDataEntryValue | null): value is File {
+  return typeof value === "object"
+    && value !== null
+    && "arrayBuffer" in value
+    && "size" in value
+    && "type" in value
+    && typeof value.arrayBuffer === "function"
+    && typeof value.size === "number"
+    && value.size > 0
+    && typeof value.type === "string";
 }
 
 async function requireCanReadPost(env: Env, user: User, organizationId: string | null, visibility: string) {
