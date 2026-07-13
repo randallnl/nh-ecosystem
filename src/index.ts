@@ -619,6 +619,27 @@ const baseStyles = String.raw`
     border-radius: var(--radius-md);
   }
 
+  .video-embed-card {
+    margin: 18px 0;
+    display: grid;
+    justify-items: start;
+  }
+
+  .video-thumb {
+    width: 100%;
+    max-width: 360px;
+    aspect-ratio: 9 / 16;
+    object-fit: cover;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--soft-blue);
+  }
+
+  .tiktok-embed {
+    width: min(100%, 605px);
+    margin: 0;
+  }
+
   .event-photo {
     display: block;
     width: 100%;
@@ -1390,11 +1411,14 @@ async function renderSectionPage(env: Env, user: User, section: string, searchPa
     env.DB.prepare(
       `SELECT p.id, p.title, p.body, p.created_at, p.organization_id, o.name AS organization_name, o.slug AS organization_slug,
         o.logo_object_key AS organization_logo_object_key, u.id AS author_user_id, u.name AS author_name, u.email AS author_email,
-        e.image_url, e.starts_at, e.location_name,
+        COALESCE(e.image_url, v.thumbnail_url) AS image_url, e.starts_at, e.location_name,
+        v.provider AS video_provider, v.source_url AS video_source_url, v.video_id AS video_id,
+        v.title AS video_title, v.author_name AS video_author_name, v.author_url AS video_author_url, v.thumbnail_url AS video_thumbnail_url,
         (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'published') AS comment_count
        FROM posts p
        LEFT JOIN organizations o ON o.id = p.organization_id
        LEFT JOIN events e ON e.post_id = p.id
+       LEFT JOIN video_embeds v ON v.post_id = p.id
        JOIN users u ON u.id = p.author_user_id
        WHERE p.section = ? AND p.status = 'published'
        ORDER BY p.created_at DESC
@@ -1414,6 +1438,13 @@ async function renderSectionPage(env: Env, user: User, section: string, searchPa
       image_url: string | null;
       starts_at: string | null;
       location_name: string | null;
+      video_provider: string | null;
+      video_source_url: string | null;
+      video_id: string | null;
+      video_title: string | null;
+      video_author_name: string | null;
+      video_author_url: string | null;
+      video_thumbnail_url: string | null;
       comment_count: number;
     }>(),
     getWritableOrganizations(env, user),
@@ -1436,6 +1467,7 @@ async function renderSectionPage(env: Env, user: User, section: string, searchPa
               <div class="meta">
                 ${post.organization_name ? renderOrganizationPill(post.organization_name, post.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
                 ${renderMemberLink(post.author_user_id, post.author_name || post.author_email, "badge")}
+                ${post.video_provider ? `<span class="badge">TikTok video</span>` : ""}
                 <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
                 <span class="badge">${Number(post.comment_count)} comments</span>
               </div>
@@ -1482,7 +1514,7 @@ async function renderSectionPage(env: Env, user: User, section: string, searchPa
 }
 
 function renderHeroPreviews(
-  posts: Array<{ id: string; title: string; body?: string; section?: string; organization_name?: string | null; organization_logo_object_key?: string | null; comment_count?: number; image_url?: string | null }>
+  posts: Array<{ id: string; title: string; body?: string; section?: string; organization_name?: string | null; organization_logo_object_key?: string | null; comment_count?: number; image_url?: string | null; video_provider?: string | null }>
 ) {
   if (!posts.length) {
     return "";
@@ -1498,7 +1530,7 @@ function renderHeroPreviews(
           <div class="post-preview">
             ${post.image_url ? `<img class="post-image" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
             <a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a>
-            <p class="muted">${post.organization_name ? `${escapeHtml(post.organization_name)} · ` : ""}${Number(post.comment_count ?? 0)} comments${post.section ? ` · ${escapeHtml(sectionLabel(post.section))}` : ""}</p>
+            <p class="muted">${post.organization_name ? `${escapeHtml(post.organization_name)} · ` : ""}${post.video_provider ? "TikTok video · " : ""}${Number(post.comment_count ?? 0)} comments${post.section ? ` · ${escapeHtml(sectionLabel(post.section))}` : ""}</p>
           </div>
         `)
         .join("")}
@@ -1521,6 +1553,13 @@ type FeedPost = {
   image_url: string | null;
   starts_at: string | null;
   location_name: string | null;
+  video_provider: string | null;
+  video_source_url: string | null;
+  video_id: string | null;
+  video_title: string | null;
+  video_author_name: string | null;
+  video_author_url: string | null;
+  video_thumbnail_url: string | null;
   comment_count: number;
 };
 
@@ -1698,7 +1737,14 @@ function renderPostForm(section: string, organizations: Array<{ id: string; name
           Body
           <textarea name="body" required placeholder="Share the context, ask, update, or next step."></textarea>
         </label>
-        <button class="primary" type="submit">Publish</button>
+        ${section === "update" ? String.raw`
+          <label>
+            TikTok URL
+            <input name="tiktok_url" type="url" placeholder="https://www.tiktok.com/@account/video/123..." />
+          </label>
+          <p class="muted">Updates with TikTok videos are submitted for admin or organization admin approval before they appear.</p>
+        ` : ""}
+        <button class="primary" type="submit">${section === "update" ? "Publish or submit" : "Publish"}</button>
       </div>
     </form>
   `;
@@ -1708,10 +1754,13 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
   const post = await env.DB.prepare(
     `SELECT p.id, p.section, p.title, p.body, p.visibility, p.status, p.created_at, p.organization_id,
       e.starts_at, e.ends_at, e.location_name, e.registration_url, e.external_url, e.image_url,
+      v.provider AS video_provider, v.source_url AS video_source_url, v.video_id, v.title AS video_title,
+      v.author_name AS video_author_name, v.author_url AS video_author_url, v.thumbnail_url AS video_thumbnail_url,
       o.name AS organization_name, o.slug AS organization_slug, o.logo_object_key AS organization_logo_object_key,
       u.id AS author_user_id, u.name AS author_name, u.email AS author_email
      FROM posts p
      LEFT JOIN events e ON e.post_id = p.id
+     LEFT JOIN video_embeds v ON v.post_id = p.id
      LEFT JOIN organizations o ON o.id = p.organization_id
      JOIN users u ON u.id = p.author_user_id
      WHERE p.id = ?`
@@ -1732,6 +1781,13 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
       registration_url: string | null;
       external_url: string | null;
       image_url: string | null;
+      video_provider: string | null;
+      video_source_url: string | null;
+      video_id: string | null;
+      video_title: string | null;
+      video_author_name: string | null;
+      video_author_url: string | null;
+      video_thumbnail_url: string | null;
       organization_name: string | null;
       organization_slug: string | null;
       organization_logo_object_key: string | null;
@@ -1783,6 +1839,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
           ${post.image_url ? `<img class="event-photo" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
           <div class="event-detail-copy">
             <p class="post-body lede">${escapeHtml(post.body)}</p>
+            ${renderVideoEmbed(post)}
           </div>
         </div>
         <div class="actions">
@@ -1820,6 +1877,38 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
       </section>
     </section>
   `, user);
+}
+
+function renderVideoEmbed(post: {
+  video_provider?: string | null;
+  video_source_url?: string | null;
+  video_id?: string | null;
+  video_title?: string | null;
+  video_author_name?: string | null;
+  video_author_url?: string | null;
+  video_thumbnail_url?: string | null;
+}) {
+  if (post.video_provider !== "tiktok" || !post.video_source_url) {
+    return "";
+  }
+  const authorUrl = post.video_author_url || post.video_source_url;
+  const authorLabel = post.video_author_name ? `@${post.video_author_name.replace(/^@/, "")}` : "TikTok";
+  return String.raw`
+    <div class="video-embed-card">
+      <blockquote
+        class="tiktok-embed"
+        cite="${escapeHtml(post.video_source_url)}"
+        ${post.video_id ? `data-video-id="${escapeHtml(post.video_id)}"` : ""}
+        style="max-width: 605px; min-width: 325px;"
+      >
+        <section>
+          <a target="_blank" rel="noopener noreferrer" href="${escapeHtml(authorUrl)}">${escapeHtml(authorLabel)}</a>
+          ${post.video_title ? `<p>${escapeHtml(post.video_title)}</p>` : ""}
+        </section>
+      </blockquote>
+      <script async src="https://www.tiktok.com/embed.js"></script>
+    </div>
+  `;
 }
 
 async function renderEventEditPage(env: Env, user: User, postId: string) {
@@ -2008,8 +2097,8 @@ async function handleRemoveEvent(env: Env, user: User, postId: string) {
 }
 
 async function handleApproveEvent(request: Request, env: Env, user: User, postId: string) {
-  const post = await getModeratableEvent(env, postId, "draft");
-  await requireCanManageEvent(env, user, post.organization_id);
+  const post = await getModeratablePost(env, postId, "draft");
+  await requireCanManagePostReview(env, user, post);
   const returnTo = await reviewReturnPath(request);
 
   await env.DB.prepare(
@@ -2017,15 +2106,15 @@ async function handleApproveEvent(request: Request, env: Env, user: User, postId
   )
     .bind(new Date().toISOString(), post.id)
     .run();
-  await writeAudit(env, user.id, "event.approved", "post", post.id, {
+  await writeAudit(env, user.id, `${post.section}.approved`, "post", post.id, {
     organization_id: post.organization_id || null,
   });
   return redirect(returnTo);
 }
 
 async function handleRejectEvent(request: Request, env: Env, user: User, postId: string) {
-  const post = await getModeratableEvent(env, postId, "draft");
-  await requireCanManageEvent(env, user, post.organization_id);
+  const post = await getModeratablePost(env, postId, "draft");
+  await requireCanManagePostReview(env, user, post);
   const returnTo = await reviewReturnPath(request);
 
   const now = new Date().toISOString();
@@ -2034,7 +2123,7 @@ async function handleRejectEvent(request: Request, env: Env, user: User, postId:
   )
     .bind(now, now, post.id)
     .run();
-  await writeAudit(env, user.id, "event.rejected", "post", post.id, {
+  await writeAudit(env, user.id, `${post.section}.rejected`, "post", post.id, {
     organization_id: post.organization_id || null,
   });
   return redirect(returnTo);
@@ -2046,9 +2135,14 @@ async function handleCreatePost(request: Request, env: Env, user: User) {
   const organizationId = cleanText(form.get("organization_id"), 80);
   const title = cleanText(form.get("title"), 220);
   const body = cleanText(form.get("body"), 6000);
+  const tiktokUrl = normalizeOptionalUrl(form.get("tiktok_url"));
 
   if (!section || !title || !body) {
     throw new HttpError(400, "Post details required", "Choose a section and include a title and body.");
+  }
+
+  if (tiktokUrl && section !== "update") {
+    throw new HttpError(400, "Video updates only", "TikTok videos can be attached to updates.");
   }
 
   if (!organizationId && user.site_role !== "site_admin") {
@@ -2060,15 +2154,41 @@ async function handleCreatePost(request: Request, env: Env, user: User) {
   }
 
   const postId = crypto.randomUUID();
-  await env.DB.prepare(
-    `INSERT INTO posts (id, organization_id, author_user_id, section, title, body, visibility, status)
-     VALUES (?, ?, ?, ?, ?, ?, 'members', 'published')`
-  )
-    .bind(postId, organizationId || null, user.id, section, title, body)
-    .run();
+  const videoEmbed = tiktokUrl ? await fetchTikTokEmbed(tiktokUrl) : null;
+  const status = videoEmbed ? "draft" : "published";
+  const statements = [
+    env.DB.prepare(
+      `INSERT INTO posts (id, organization_id, author_user_id, section, title, body, visibility, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'members', ?)`
+    )
+      .bind(postId, organizationId || null, user.id, section, title, body, status),
+  ];
 
-  await writeAudit(env, user.id, "post.created", "post", postId, { section, organization_id: organizationId || null });
-  return redirect(`/posts/${postId}`);
+  if (videoEmbed) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO video_embeds (post_id, provider, source_url, video_id, title, author_name, author_url, thumbnail_url)
+         VALUES (?, 'tiktok', ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        postId,
+        videoEmbed.sourceUrl,
+        videoEmbed.videoId || null,
+        videoEmbed.title || null,
+        videoEmbed.authorName || null,
+        videoEmbed.authorUrl || null,
+        videoEmbed.thumbnailUrl || null
+      )
+    );
+  }
+
+  await env.DB.batch(statements);
+
+  await writeAudit(env, user.id, videoEmbed ? "video.submitted" : "post.created", "post", postId, {
+    section,
+    organization_id: organizationId || null,
+    provider: videoEmbed ? "tiktok" : null,
+  });
+  return redirect(videoEmbed ? "/updates" : `/posts/${postId}`);
 }
 
 async function handleCreateComment(request: Request, env: Env, user: User, postId: string) {
@@ -2122,7 +2242,10 @@ async function renderAdmin(env: Env, user: User) {
      ORDER BY u.created_at DESC
      LIMIT 8`
   ).all<{ id: string; email: string; name: string | null; site_role: string; status: string; organizations: string | null }>();
-  const pendingEvents = await getPendingEvents(env, user);
+  const [pendingEvents, pendingVideos] = await Promise.all([
+    getPendingEvents(env, user),
+    getPendingVideos(env, user),
+  ]);
 
   const users = Number((stats[0].results?.[0] as { count?: number } | undefined)?.count ?? 0);
   const invites = Number((stats[1].results?.[0] as { count?: number } | undefined)?.count ?? 0);
@@ -2171,6 +2294,7 @@ async function renderAdmin(env: Env, user: User) {
       </section>
 
       ${renderPendingEventReview(pendingEvents, "/admin")}
+      ${renderPendingVideoReview(pendingVideos, "/admin")}
 
       <section class="admin-columns" aria-label="Onboarding forms">
         <div class="panel">
@@ -3044,7 +3168,12 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
         .map((member) => `<li><strong>${renderMemberLink(member.id, member.name || member.email)}</strong><br /><span class="muted">${escapeHtml(member.email)} · ${escapeHtml(formatRole(member.role))}</span></li>`)
         .join("")
     : `<li><strong>No linked members</strong><br /><span class="muted">Invite members from the admin tools.</span></li>`;
-  const pendingEvents = canEdit ? await getPendingEvents(env, user, organization.id) : [];
+  const [pendingEvents, pendingVideos] = canEdit
+    ? await Promise.all([
+        getPendingEvents(env, user, organization.id),
+        getPendingVideos(env, user, organization.id),
+      ])
+    : [[], []];
 
   return layout(organization.name, String.raw`
     <section class="dashboard">
@@ -3084,6 +3213,7 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
       </section>
 
       ${canEdit ? renderPendingEventReview(pendingEvents, `/organizations/${organization.slug}`) : ""}
+      ${canEdit ? renderPendingVideoReview(pendingVideos, `/organizations/${organization.slug}`) : ""}
 
       ${canEdit ? renderOrganizationEditForm(organization, affiliations, organizationAffiliationIds) : ""}
     </section>
@@ -3945,7 +4075,7 @@ function html(body: string, status = 200, headers: HeadersInit = {}) {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      "content-security-policy": "default-src 'self'; img-src 'self' https: data:; script-src 'self' https://www.tiktok.com; frame-src https://www.tiktok.com https://*.tiktok.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
       "x-content-type-options": "nosniff",
       "referrer-policy": "strict-origin-when-cross-origin",
       ...headers,
@@ -4002,6 +4132,75 @@ function normalizeOptionalUrl(value: FormDataEntryValue | null) {
   try {
     const url = new URL(value.trim());
     return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+type TikTokEmbed = {
+  sourceUrl: string;
+  videoId: string;
+  title: string;
+  authorName: string;
+  authorUrl: string;
+  thumbnailUrl: string;
+};
+
+async function fetchTikTokEmbed(sourceUrl: string): Promise<TikTokEmbed> {
+  const normalized = normalizeTikTokVideoUrl(sourceUrl);
+  if (!normalized) {
+    throw new HttpError(400, "TikTok URL required", "Paste a valid TikTok video URL.");
+  }
+
+  const response = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(normalized)}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new HttpError(400, "TikTok video unavailable", "TikTok could not provide an embed for that video.");
+  }
+
+  const data = await response.json<{
+    title?: unknown;
+    author_name?: unknown;
+    author_url?: unknown;
+    thumbnail_url?: unknown;
+    html?: unknown;
+  }>();
+  const htmlValue = typeof data.html === "string" ? data.html : "";
+  const videoId = videoIdFromTikTokUrl(normalized) || htmlValue.match(/\bdata-video-id=["']([^"']+)["']/i)?.[1] || "";
+
+  return {
+    sourceUrl: normalized,
+    videoId: videoId.slice(0, 80),
+    title: typeof data.title === "string" ? data.title.slice(0, 500) : "",
+    authorName: typeof data.author_name === "string" ? data.author_name.slice(0, 220) : "",
+    authorUrl: typeof data.author_url === "string" ? data.author_url.slice(0, 500) : "",
+    thumbnailUrl: typeof data.thumbnail_url === "string" ? data.thumbnail_url.slice(0, 1000) : "",
+  };
+}
+
+function normalizeTikTokVideoUrl(value: string) {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.replace(/^www\./, "").toLowerCase();
+    if (!["tiktok.com", "vm.tiktok.com", "vt.tiktok.com"].includes(hostname)) {
+      return "";
+    }
+    if (hostname === "tiktok.com" && !url.pathname.includes("/video/")) {
+      return "";
+    }
+    url.protocol = "https:";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function videoIdFromTikTokUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.pathname.match(/\/video\/(\d+)/)?.[1] || "";
   } catch {
     return "";
   }
@@ -4134,6 +4333,22 @@ type PendingEvent = {
   scraped_at: string | null;
 };
 
+type PendingVideo = {
+  id: string;
+  title: string;
+  body: string;
+  created_at: string;
+  organization_id: string | null;
+  organization_name: string | null;
+  organization_slug: string | null;
+  organization_logo_object_key: string | null;
+  source_url: string;
+  video_title: string | null;
+  author_name: string | null;
+  author_url: string | null;
+  thumbnail_url: string | null;
+};
+
 async function getPendingEvents(env: Env, user: User, organizationId?: string) {
   const selectSql = `SELECT p.id, p.title, p.body, p.created_at, p.organization_id,
       o.name AS organization_name, o.slug AS organization_slug, o.logo_object_key AS organization_logo_object_key,
@@ -4212,6 +4427,82 @@ function renderPendingEventReview(events: PendingEvent[], returnTo: string) {
   `;
 }
 
+async function getPendingVideos(env: Env, user: User, organizationId?: string) {
+  const selectSql = `SELECT p.id, p.title, p.body, p.created_at, p.organization_id,
+      o.name AS organization_name, o.slug AS organization_slug, o.logo_object_key AS organization_logo_object_key,
+      v.source_url, v.title AS video_title, v.author_name, v.author_url, v.thumbnail_url
+     FROM posts p
+     JOIN video_embeds v ON v.post_id = p.id
+     LEFT JOIN organizations o ON o.id = p.organization_id
+     WHERE p.section = 'update' AND p.status = 'draft'`;
+  const orderSql = " ORDER BY p.created_at DESC LIMIT 25";
+
+  if (user.site_role === "site_admin") {
+    const query = organizationId ? `${selectSql} AND p.organization_id = ?${orderSql}` : `${selectSql}${orderSql}`;
+    const statement = env.DB.prepare(query);
+    const pending = organizationId ? await statement.bind(organizationId).all<PendingVideo>() : await statement.all<PendingVideo>();
+    return pending.results ?? [];
+  }
+
+  const accessSql = ` AND EXISTS (
+      SELECT 1 FROM organization_memberships m
+      WHERE m.organization_id = p.organization_id
+        AND m.user_id = ?
+        AND m.role = 'org_admin'
+    )`;
+  const query = organizationId ? `${selectSql}${accessSql} AND p.organization_id = ?${orderSql}` : `${selectSql}${accessSql}${orderSql}`;
+  const statement = env.DB.prepare(query);
+  const pending = organizationId
+    ? await statement.bind(user.id, organizationId).all<PendingVideo>()
+    : await statement.bind(user.id).all<PendingVideo>();
+  return pending.results ?? [];
+}
+
+function renderPendingVideoReview(videos: PendingVideo[], returnTo: string) {
+  const safeReturnTo = sanitizeReviewReturnPath(returnTo);
+  const items = videos.length
+    ? videos
+        .map((video) => String.raw`
+          <li class="${video.thumbnail_url ? "with-image" : ""}">
+            ${video.thumbnail_url ? `<img class="list-thumb" src="${escapeHtml(video.thumbnail_url)}" alt="" loading="lazy" />` : ""}
+            <div class="list-copy">
+              <strong>${escapeHtml(video.title)}</strong>
+              <p>${escapeHtml(excerpt(video.body, 260))}</p>
+              <div class="meta">
+                ${video.organization_name ? renderOrganizationPill(video.organization_name, video.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
+                <span class="badge">TikTok video</span>
+                <span class="badge">${escapeHtml(formatDate(video.created_at))}</span>
+                ${video.author_name ? `<span class="badge">${escapeHtml(video.author_name)}</span>` : ""}
+              </div>
+              ${video.video_title ? `<p class="muted">${escapeHtml(excerpt(video.video_title, 180))}</p>` : ""}
+              <div class="review-actions">
+                <form method="post" action="/posts/${escapeHtml(video.id)}/approve">
+                  <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
+                  <button class="primary" type="submit">Approve</button>
+                </form>
+                <form method="post" action="/posts/${escapeHtml(video.id)}/reject">
+                  <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
+                  <button class="danger" type="submit">Reject</button>
+                </form>
+                <a class="button secondary" href="${escapeHtml(video.source_url)}">Source</a>
+              </div>
+            </div>
+          </li>
+        `)
+        .join("")
+    : `<li><strong>No pending videos</strong><br /><span class="muted">TikTok updates submitted by members will appear here for review.</span></li>`;
+
+  return String.raw`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Pending video review</h2>
+        <span class="badge">${videos.length} pending</span>
+      </div>
+      <ul class="compact-list">${items}</ul>
+    </section>
+  `;
+}
+
 async function getModeratableEvent(env: Env, postId: string, expectedStatus: string) {
   const post = await env.DB.prepare(
     `SELECT p.id, p.organization_id, p.status, o.slug AS organization_slug
@@ -4225,6 +4516,42 @@ async function getModeratableEvent(env: Env, postId: string, expectedStatus: str
     throw new HttpError(404, "Event not found", "That event is not waiting for review.");
   }
   return post;
+}
+
+async function getModeratablePost(env: Env, postId: string, expectedStatus: string) {
+  const post = await env.DB.prepare(
+    `SELECT p.id, p.section, p.organization_id, p.status, o.slug AS organization_slug,
+      CASE WHEN v.post_id IS NOT NULL THEN 1 ELSE 0 END AS has_video
+     FROM posts p
+     LEFT JOIN organizations o ON o.id = p.organization_id
+     LEFT JOIN video_embeds v ON v.post_id = p.id
+     WHERE p.id = ? AND p.status = ? AND (
+       p.section = 'event'
+       OR (p.section = 'update' AND v.post_id IS NOT NULL)
+     )`
+  )
+    .bind(postId, expectedStatus)
+    .first<{ id: string; section: string; organization_id: string | null; status: string; organization_slug: string | null; has_video: number }>();
+  if (!post) {
+    throw new HttpError(404, "Review item not found", "That post is not waiting for review.");
+  }
+  return post;
+}
+
+async function requireCanManagePostReview(
+  env: Env,
+  user: User,
+  post: { section: string; organization_id: string | null; has_video?: number }
+) {
+  if (post.section === "event") {
+    await requireCanManageEvent(env, user, post.organization_id);
+    return;
+  }
+  if (post.section === "update" && post.has_video) {
+    await requireCanManageEvent(env, user, post.organization_id);
+    return;
+  }
+  throw new HttpError(403, "Review access required", "Only site admins and organization admins can review this post.");
 }
 
 async function reviewReturnPath(request: Request) {
