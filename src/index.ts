@@ -316,6 +316,7 @@ const baseStyles = String.raw`
     color: var(--accent);
     background: var(--soft-blue);
     font-size: 0.78rem;
+    text-decoration: none;
   }
 
   .list {
@@ -1232,7 +1233,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
   const [posts, writableOrganizations] = await Promise.all([
     env.DB.prepare(
       `SELECT p.id, p.title, p.body, p.created_at, p.organization_id, o.name AS organization_name, o.slug AS organization_slug,
-        o.logo_object_key AS organization_logo_object_key, u.name AS author_name, u.email AS author_email,
+        o.logo_object_key AS organization_logo_object_key, u.id AS author_user_id, u.name AS author_name, u.email AS author_email,
         e.image_url,
         (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'published') AS comment_count
        FROM posts p
@@ -1251,6 +1252,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
       organization_name: string | null;
       organization_slug: string | null;
       organization_logo_object_key: string | null;
+      author_user_id: string;
       author_name: string | null;
       author_email: string;
       image_url: string | null;
@@ -1270,6 +1272,7 @@ async function renderSectionPage(env: Env, user: User, section: string) {
               <p class="muted">${escapeHtml(excerpt(post.body, 180))}</p>
               <div class="meta">
                 ${post.organization_name ? renderOrganizationPill(post.organization_name, post.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
+                ${renderMemberLink(post.author_user_id, post.author_name || post.author_email, "badge")}
                 <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
                 <span class="badge">${Number(post.comment_count)} comments</span>
               </div>
@@ -1372,7 +1375,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
     `SELECT p.id, p.section, p.title, p.body, p.visibility, p.status, p.created_at, p.organization_id,
       e.starts_at, e.ends_at, e.location_name, e.registration_url, e.external_url, e.image_url,
       o.name AS organization_name, o.slug AS organization_slug, o.logo_object_key AS organization_logo_object_key,
-      u.name AS author_name, u.email AS author_email
+      u.id AS author_user_id, u.name AS author_name, u.email AS author_email
      FROM posts p
      LEFT JOIN events e ON e.post_id = p.id
      LEFT JOIN organizations o ON o.id = p.organization_id
@@ -1398,6 +1401,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
       organization_name: string | null;
       organization_slug: string | null;
       organization_logo_object_key: string | null;
+      author_user_id: string;
       author_name: string | null;
       author_email: string;
     }>();
@@ -1410,17 +1414,17 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
   const canEditEvent = post.section === "event" && await canManageEvent(env, user, post.organization_id);
 
   const comments = await env.DB.prepare(
-    `SELECT c.id, c.body, c.created_at, u.name AS author_name, u.email AS author_email
+    `SELECT c.id, c.body, c.created_at, u.id AS author_user_id, u.name AS author_name, u.email AS author_email
      FROM comments c
      JOIN users u ON u.id = c.author_user_id
      WHERE c.post_id = ? AND c.status = 'published'
      ORDER BY c.created_at`
   )
     .bind(post.id)
-    .all<{ id: string; body: string; created_at: string; author_name: string | null; author_email: string }>();
+    .all<{ id: string; body: string; created_at: string; author_user_id: string; author_name: string | null; author_email: string }>();
   const commentItems = comments.results?.length
     ? comments.results
-        .map((comment) => `<li><strong>${escapeHtml(comment.author_name || comment.author_email)}</strong><br /><span class="muted">${escapeHtml(formatDate(comment.created_at))}</span><p class="post-body">${escapeHtml(comment.body)}</p></li>`)
+        .map((comment) => `<li><strong>${renderMemberLink(comment.author_user_id, comment.author_name || comment.author_email)}</strong><br /><span class="muted">${escapeHtml(formatDate(comment.created_at))}</span><p class="post-body">${escapeHtml(comment.body)}</p></li>`)
         .join("")
     : `<li><strong>No comments yet</strong><br /><span class="muted">Start the discussion below.</span></li>`;
   const meta = sectionMeta(post.section);
@@ -1435,7 +1439,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
         <h1 class="event-detail-title">${escapeHtml(post.title)}</h1>
         <div class="meta">
           ${post.organization_name ? renderOrganizationPill(post.organization_name, post.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
-          <span class="badge">${escapeHtml(post.author_name || post.author_email)}</span>
+          ${renderMemberLink(post.author_user_id, post.author_name || post.author_email, "badge")}
           ${post.starts_at ? `<span class="badge">${escapeHtml(formatDate(post.starts_at))}</span>` : ""}
           ${post.location_name ? `<span class="badge">${escapeHtml(post.location_name)}</span>` : ""}
         </div>
@@ -1795,7 +1799,7 @@ async function renderAdmin(env: Env, user: User) {
     : `<li><strong>No organizations yet</strong><br /><span class="muted">Create the first member organization with the form.</span></li>`;
   const userItems = recentUsers.results?.length
     ? recentUsers.results
-        .map((member) => `<li><strong><a href="/admin/users/${escapeHtml(member.id)}">${escapeHtml(member.name || member.email)}</a></strong><br /><span class="muted">${escapeHtml(member.email)} · ${escapeHtml(member.site_role)} · ${escapeHtml(member.status)}${member.organizations ? ` · ${escapeHtml(member.organizations)}` : ""}</span></li>`)
+        .map((member) => `<li><strong>${renderMemberLink(member.id, member.name || member.email)}</strong><br /><span class="muted">${escapeHtml(member.email)} · ${escapeHtml(member.site_role)} · ${escapeHtml(member.status)}${member.organizations ? ` · ${escapeHtml(member.organizations)}` : ""} · <a href="/admin/users/${escapeHtml(member.id)}">Admin edit</a></span></li>`)
         .join("")
     : `<li><strong>No members yet</strong><br /><span class="muted">Invited members will appear here.</span></li>`;
 
@@ -1989,7 +1993,7 @@ async function renderMemberDirectory(env: Env, user: User) {
 
 async function renderMemberProfile(env: Env, user: User, memberId: string) {
   const member = await getMemberProfile(env, memberId);
-  if (!member || member.status !== "active" || (member.profile_visibility === "hidden" && user.id !== member.id && user.site_role !== "site_admin")) {
+  if (!member || member.status !== "active") {
     throw new HttpError(404, "Member not found", "That member profile does not exist or is not visible.");
   }
 
@@ -2226,6 +2230,10 @@ function renderAvatar(label: string, avatarObjectKey: string | null | undefined 
   return `<span class="avatar${large ? " large" : ""}" aria-hidden="true">${escapeHtml(initials)}</span>`;
 }
 
+function renderMemberLink(userId: string, label: string, className = "") {
+  return `<a ${className ? `class="${escapeHtml(className)}" ` : ""}href="/members/${escapeHtml(userId)}">${escapeHtml(label)}</a>`;
+}
+
 async function renderAdminUserProfile(env: Env, admin: User, userId: string) {
   const member = await env.DB.prepare(
     `SELECT id, email, name, avatar_object_key, profile_title, pronouns, bio, location, website_url,
@@ -2409,17 +2417,17 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
 
   const canEdit = user.site_role === "site_admin" || membership?.role === "org_admin";
   const members = await env.DB.prepare(
-    `SELECT u.name, u.email, m.role
+    `SELECT u.id, u.name, u.email, m.role
      FROM organization_memberships m
      JOIN users u ON u.id = m.user_id
      WHERE m.organization_id = ?
      ORDER BY m.role DESC, u.name, u.email`
   )
     .bind(organization.id)
-    .all<{ name: string | null; email: string; role: string }>();
+    .all<{ id: string; name: string | null; email: string; role: string }>();
   const memberItems = members.results?.length
     ? members.results
-        .map((member) => `<li><strong>${escapeHtml(member.name || member.email)}</strong><br /><span class="muted">${escapeHtml(member.email)} · ${escapeHtml(formatRole(member.role))}</span></li>`)
+        .map((member) => `<li><strong>${renderMemberLink(member.id, member.name || member.email)}</strong><br /><span class="muted">${escapeHtml(member.email)} · ${escapeHtml(formatRole(member.role))}</span></li>`)
         .join("")
     : `<li><strong>No linked members</strong><br /><span class="muted">Invite members from the admin tools.</span></li>`;
   const pendingEvents = canEdit ? await getPendingEvents(env, user, organization.id) : [];
