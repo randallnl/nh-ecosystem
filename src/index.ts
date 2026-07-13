@@ -788,13 +788,26 @@ const baseStyles = String.raw`
 
   .event-card {
     display: grid;
-    grid-template-columns: 76px minmax(0, 1fr);
+    grid-template-columns: 76px 128px minmax(0, 1fr);
     gap: 14px;
     padding: 14px;
     border: 1px solid rgba(154, 184, 217, 0.48);
     border-radius: var(--radius-lg);
     background: rgba(255, 255, 255, 0.76);
     box-shadow: 0 18px 46px rgba(31, 82, 135, 0.1);
+  }
+
+  .event-card.no-image {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+
+  .event-card-image {
+    width: 128px;
+    height: 96px;
+    border-radius: var(--radius-md);
+    object-fit: cover;
+    align-self: start;
+    background: var(--soft-blue);
   }
 
   .event-datebox {
@@ -920,8 +933,14 @@ const baseStyles = String.raw`
       height: 135px;
     }
 
-    .event-card {
+    .event-card,
+    .event-card.no-image {
       grid-template-columns: 1fr;
+    }
+
+    .event-card-image {
+      width: 100%;
+      height: 150px;
     }
   }
 `;
@@ -1577,11 +1596,12 @@ function renderEventFilters(posts: FeedPost[], searchParams: URLSearchParams) {
 
 function renderEventFeedCard(post: FeedPost, comments: CommentPreview[]) {
   return String.raw`
-    <li class="event-card">
+    <li class="event-card${post.image_url ? "" : " no-image"}">
       <div class="event-datebox">
         <span>${escapeHtml(eventMonth(post.starts_at))}</span>
         <strong>${escapeHtml(eventDay(post.starts_at))}</strong>
       </div>
+      ${post.image_url ? `<img class="event-card-image" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
       <div class="list-copy">
         <strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong>
         <p class="muted">${escapeHtml(excerpt(post.body, 150))}</p>
