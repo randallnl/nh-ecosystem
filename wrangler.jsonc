@@ -4,6 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-10",
   "workers_dev": true,
+  "vars": {
+    "SCRAPER_RUN_URL": "https://parter-event-scraper.randall-d53.workers.dev"
+  },
   "routes": [
     {
       "pattern": "nhsolidarityecosystem.com",

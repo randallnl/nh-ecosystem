@@ -2,6 +2,8 @@ interface Env {
   DB: D1Database;
   ASSETS: R2Bucket;
   SCRAPER_API_TOKEN?: string;
+  SCRAPER_ADMIN_TOKEN?: string;
+  SCRAPER_RUN_URL?: string;
   EMAIL: {
     send(message: {
       to: string;
@@ -652,6 +654,17 @@ const baseStyles = String.raw`
     margin: 0;
   }
 
+  .review-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .review-actions form {
+    margin: 0;
+  }
+
   .compact-list a,
   .tile a {
     color: var(--accent);
@@ -817,6 +830,13 @@ export default {
         return handleAdminInvite(request, env, user);
       }
 
+      if (request.method === "POST" && url.pathname === "/admin/scraper/run") {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        requireSiteAdmin(user);
+        return handleRunScraper(env, user);
+      }
+
       if (request.method === "GET" && url.pathname.startsWith("/admin/users/")) {
         const user = requireUser(session.user);
         requireSiteAdmin(user);
@@ -842,6 +862,20 @@ export default {
         assertSameOrigin(request);
         const user = requireUser(session.user);
         return handleCreatePost(request, env, user);
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/approve")) {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/approve", "")).split("/")[0];
+        return handleApproveEvent(request, env, user, postId);
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/reject")) {
+        assertSameOrigin(request);
+        const user = requireUser(session.user);
+        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/reject", "")).split("/")[0];
+        return handleRejectEvent(request, env, user, postId);
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/edit")) {
@@ -1550,6 +1584,39 @@ async function handleRemoveEvent(env: Env, user: User, postId: string) {
   return redirect("/events");
 }
 
+async function handleApproveEvent(request: Request, env: Env, user: User, postId: string) {
+  const post = await getModeratableEvent(env, postId, "draft");
+  await requireCanManageEvent(env, user, post.organization_id);
+  const returnTo = await reviewReturnPath(request);
+
+  await env.DB.prepare(
+    "UPDATE posts SET status = 'published', archived_at = NULL, updated_at = ? WHERE id = ?"
+  )
+    .bind(new Date().toISOString(), post.id)
+    .run();
+  await writeAudit(env, user.id, "event.approved", "post", post.id, {
+    organization_id: post.organization_id || null,
+  });
+  return redirect(returnTo);
+}
+
+async function handleRejectEvent(request: Request, env: Env, user: User, postId: string) {
+  const post = await getModeratableEvent(env, postId, "draft");
+  await requireCanManageEvent(env, user, post.organization_id);
+  const returnTo = await reviewReturnPath(request);
+
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    "UPDATE posts SET status = 'archived', archived_at = ?, updated_at = ? WHERE id = ?"
+  )
+    .bind(now, now, post.id)
+    .run();
+  await writeAudit(env, user.id, "event.rejected", "post", post.id, {
+    organization_id: post.organization_id || null,
+  });
+  return redirect(returnTo);
+}
+
 async function handleCreatePost(request: Request, env: Env, user: User) {
   const form = await request.formData();
   const section = cleanSection(form.get("section"));
@@ -1630,6 +1697,7 @@ async function renderAdmin(env: Env, user: User) {
      ORDER BY u.created_at DESC
      LIMIT 8`
   ).all<{ id: string; email: string; name: string | null; site_role: string; status: string; organizations: string | null }>();
+  const pendingEvents = await getPendingEvents(env, user);
 
   const users = Number((stats[0].results?.[0] as { count?: number } | undefined)?.count ?? 0);
   const invites = Number((stats[1].results?.[0] as { count?: number } | undefined)?.count ?? 0);
@@ -1664,6 +1732,19 @@ async function renderAdmin(env: Env, user: User) {
         <div class="tile"><strong>Open invites</strong><span>${invites} invite or review records</span></div>
         <div class="tile"><strong>Active sessions</strong><span>${sessions} unrevoked sessions</span></div>
       </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Event scraper</h2>
+          <span class="badge">${pendingEvents.length} pending review</span>
+        </div>
+        <form method="post" action="/admin/scraper/run">
+          <button class="primary" type="submit">Run scraper now</button>
+        </form>
+        <div class="notice">Scraped events are imported as pending drafts. A site admin or the organization admin must approve each event before it appears in the events section.</div>
+      </section>
+
+      ${renderPendingEventReview(pendingEvents, "/admin")}
 
       <section class="admin-columns" aria-label="Onboarding forms">
         <div class="panel">
@@ -1971,6 +2052,7 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
         .map((member) => `<li><strong>${escapeHtml(member.name || member.email)}</strong><br /><span class="muted">${escapeHtml(member.email)} · ${escapeHtml(formatRole(member.role))}</span></li>`)
         .join("")
     : `<li><strong>No linked members</strong><br /><span class="muted">Invite members from the admin tools.</span></li>`;
+  const pendingEvents = canEdit ? await getPendingEvents(env, user, organization.id) : [];
 
   return layout(organization.name, String.raw`
     <section class="dashboard">
@@ -2007,6 +2089,8 @@ async function renderOrganizationProfile(env: Env, user: User, slug: string) {
           <ul class="compact-list">${memberItems}</ul>
         </aside>
       </section>
+
+      ${canEdit ? renderPendingEventReview(pendingEvents, `/organizations/${organization.slug}`) : ""}
 
       ${canEdit ? renderOrganizationEditForm(organization) : ""}
     </section>
@@ -2228,6 +2312,39 @@ async function handleAdminInvite(request: Request, env: Env, user: User) {
   });
 
   return redirect("/admin");
+}
+
+async function handleRunScraper(env: Env, user: User) {
+  if (!env.SCRAPER_RUN_URL || !env.SCRAPER_ADMIN_TOKEN) {
+    throw new HttpError(503, "Scraper trigger unavailable", "SCRAPER_RUN_URL and SCRAPER_ADMIN_TOKEN must be configured before admins can run the scraper.");
+  }
+
+  const response = await fetch(env.SCRAPER_RUN_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.SCRAPER_ADMIN_TOKEN}`,
+      Accept: "application/json",
+    },
+  });
+  const resultText = await response.text();
+  if (!response.ok) {
+    throw new HttpError(502, "Scraper run failed", resultText || `The scraper returned ${response.status}.`);
+  }
+
+  await writeAudit(env, user.id, "event_scraper.manual_run", "system", "event-scraper", {
+    result: resultText.slice(0, 1000),
+  });
+
+  return html(layout("Scraper run complete", String.raw`
+    <section class="auth-shell">
+      <div class="auth-card">
+        <p class="eyebrow">Event scraper</p>
+        <h1>Run complete</h1>
+        <p class="lede">${escapeHtml(resultText)}</p>
+        <div class="actions"><a class="button secondary" href="/admin">Back to admin</a></div>
+      </div>
+    </section>
+  `, user));
 }
 
 async function handleSetupPage(env: Env, user: User | null) {
@@ -2928,6 +3045,129 @@ function renderOrganizationPill(name: string, logoObjectKey: string | null | und
   `;
 }
 
+type PendingEvent = {
+  id: string;
+  title: string;
+  body: string;
+  created_at: string;
+  organization_id: string | null;
+  organization_name: string | null;
+  organization_slug: string | null;
+  organization_logo_object_key: string | null;
+  starts_at: string | null;
+  location_name: string | null;
+  external_url: string | null;
+  source_url: string | null;
+  image_url: string | null;
+  scraped_at: string | null;
+};
+
+async function getPendingEvents(env: Env, user: User, organizationId?: string) {
+  const selectSql = `SELECT p.id, p.title, p.body, p.created_at, p.organization_id,
+      o.name AS organization_name, o.slug AS organization_slug, o.logo_object_key AS organization_logo_object_key,
+      e.starts_at, e.location_name, e.external_url, e.source_url, e.image_url, e.scraped_at
+     FROM posts p
+     JOIN events e ON e.post_id = p.id
+     LEFT JOIN organizations o ON o.id = p.organization_id
+     WHERE p.section = 'event' AND p.status = 'draft'`;
+  const orderSql = " ORDER BY COALESCE(e.scraped_at, p.created_at) DESC LIMIT 25";
+
+  if (user.site_role === "site_admin") {
+    const query = organizationId ? `${selectSql} AND p.organization_id = ?${orderSql}` : `${selectSql}${orderSql}`;
+    const statement = env.DB.prepare(query);
+    const pending = organizationId ? await statement.bind(organizationId).all<PendingEvent>() : await statement.all<PendingEvent>();
+    return pending.results ?? [];
+  }
+
+  const accessSql = ` AND EXISTS (
+      SELECT 1 FROM organization_memberships m
+      WHERE m.organization_id = p.organization_id
+        AND m.user_id = ?
+        AND m.role = 'org_admin'
+    )`;
+  const query = organizationId ? `${selectSql}${accessSql} AND p.organization_id = ?${orderSql}` : `${selectSql}${accessSql}${orderSql}`;
+  const statement = env.DB.prepare(query);
+  const pending = organizationId
+    ? await statement.bind(user.id, organizationId).all<PendingEvent>()
+    : await statement.bind(user.id).all<PendingEvent>();
+  return pending.results ?? [];
+}
+
+function renderPendingEventReview(events: PendingEvent[], returnTo: string) {
+  const safeReturnTo = sanitizeReviewReturnPath(returnTo);
+  const items = events.length
+    ? events
+        .map((event) => {
+          const sourceUrl = event.external_url || event.source_url;
+          return String.raw`
+            <li class="${event.image_url ? "with-image" : ""}">
+              ${event.image_url ? `<img class="list-thumb" src="${escapeHtml(event.image_url)}" alt="" loading="lazy" />` : ""}
+              <div class="list-copy">
+                <strong>${escapeHtml(event.title)}</strong>
+                <p>${escapeHtml(excerpt(event.body, 260))}</p>
+                <div class="meta">
+                  ${event.organization_name ? renderOrganizationPill(event.organization_name, event.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
+                  <span class="badge">${escapeHtml(formatDate(event.starts_at || event.created_at))}</span>
+                  ${event.location_name ? `<span class="badge">${escapeHtml(event.location_name)}</span>` : ""}
+                  ${event.scraped_at ? `<span class="badge">Scraped ${escapeHtml(formatDate(event.scraped_at))}</span>` : ""}
+                </div>
+                <div class="review-actions">
+                  <form method="post" action="/posts/${escapeHtml(event.id)}/approve">
+                    <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
+                    <button class="primary" type="submit">Approve</button>
+                  </form>
+                  <form method="post" action="/posts/${escapeHtml(event.id)}/reject">
+                    <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
+                    <button class="danger" type="submit">Reject</button>
+                  </form>
+                  ${sourceUrl ? `<a class="button secondary" href="${escapeHtml(sourceUrl)}">Source</a>` : ""}
+                </div>
+              </div>
+            </li>
+          `;
+        })
+        .join("")
+    : `<li><strong>No pending events</strong><br /><span class="muted">New scraped events will appear here for review before publishing.</span></li>`;
+
+  return String.raw`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Pending event review</h2>
+        <span class="badge">${events.length} pending</span>
+      </div>
+      <ul class="compact-list">${items}</ul>
+    </section>
+  `;
+}
+
+async function getModeratableEvent(env: Env, postId: string, expectedStatus: string) {
+  const post = await env.DB.prepare(
+    `SELECT p.id, p.organization_id, p.status, o.slug AS organization_slug
+     FROM posts p
+     LEFT JOIN organizations o ON o.id = p.organization_id
+     WHERE p.id = ? AND p.section = 'event' AND p.status = ?`
+  )
+    .bind(postId, expectedStatus)
+    .first<{ id: string; organization_id: string | null; status: string; organization_slug: string | null }>();
+  if (!post) {
+    throw new HttpError(404, "Event not found", "That event is not waiting for review.");
+  }
+  return post;
+}
+
+async function reviewReturnPath(request: Request) {
+  const form = await request.formData();
+  const value = form.get("return_to");
+  return sanitizeReviewReturnPath(typeof value === "string" ? value : "");
+}
+
+function sanitizeReviewReturnPath(value: string) {
+  if (value === "/admin" || value.startsWith("/organizations/")) {
+    return value;
+  }
+  return "/admin";
+}
+
 type ScrapedEvent = {
   partner?: unknown;
   title?: unknown;
@@ -3016,8 +3256,16 @@ async function handleScraperEvents(request: Request, env: Env) {
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO posts (id, organization_id, author_user_id, section, title, body, visibility, status)
-         VALUES (?, ?, 'system:event-scraper', 'event', ?, ?, 'members', 'published')
-         ON CONFLICT(id) DO UPDATE SET title = excluded.title, body = excluded.body, updated_at = CURRENT_TIMESTAMP`
+         VALUES (?, ?, 'system:event-scraper', 'event', ?, ?, 'members', 'draft')
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           body = excluded.body,
+           status = CASE
+             WHEN posts.status = 'published' THEN 'published'
+             WHEN posts.status = 'archived' THEN 'archived'
+             ELSE 'draft'
+           END,
+           updated_at = CURRENT_TIMESTAMP`
       ).bind(postId, organization.id, title, body),
       env.DB.prepare(
         `INSERT INTO events (post_id, starts_at, ends_at, location_name, registration_url, source_url, external_url, external_id, scraped_at, image_url)
