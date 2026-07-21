@@ -920,6 +920,41 @@ const baseStyles = String.raw`
     margin: 0;
   }
 
+  .social-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .reaction-button {
+    min-height: 32px;
+    padding: 5px 10px;
+    color: var(--accent);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    background: #ffffff;
+    font-size: 0.78rem;
+    box-shadow: none;
+  }
+
+  .reaction-button.is-active {
+    color: #ffffff;
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+
+  .load-more-row {
+    display: grid;
+    justify-items: center;
+    margin-top: 14px;
+  }
+
+  .notification-unread {
+    border-color: rgba(37, 99, 235, 0.42) !important;
+    background: var(--soft-blue) !important;
+  }
+
   .compact-list a,
   .tile a {
     color: var(--accent);
@@ -1041,6 +1076,7 @@ app.route(
     handleCreatePost,
     handleRejectPost: handleRejectEvent,
     handleRemovePost: handleRemoveEvent,
+    handleReactToPost,
     handleUpdatePost: handleUpdateEvent,
     html,
   })
@@ -1196,6 +1232,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       if (request.method === "GET" && url.pathname === "/members") {
         const user = requireUser(session.user);
         return html(await renderMemberDirectory(env, user));
+      }
+
+      if (request.method === "GET" && url.pathname === "/notifications") {
+        const user = requireUser(session.user);
+        return html(await renderNotifications(env, user));
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/members/")) {
@@ -1444,6 +1485,8 @@ async function renderApp(env: Env, user: User) {
 
 async function renderSectionPage(env: Env, user: User, section: string, searchParams = new URLSearchParams()) {
   const meta = sectionMeta(section);
+  const pageSize = 20;
+  const offset = Math.max(0, Number(searchParams.get("offset") || "0") || 0);
   const [posts, writableOrganizations] = await Promise.all([
     env.DB.prepare(
       `SELECT p.id, p.title, p.body, p.created_at, p.organization_id, o.name AS organization_name, o.slug AS organization_slug,
@@ -1451,6 +1494,8 @@ async function renderSectionPage(env: Env, user: User, section: string, searchPa
         COALESCE(e.image_url, v.thumbnail_url) AS image_url, e.starts_at, e.location_name,
         v.provider AS video_provider, v.source_url AS video_source_url, v.video_id AS video_id,
         v.title AS video_title, v.author_name AS video_author_name, v.author_url AS video_author_url, v.thumbnail_url AS video_thumbnail_url,
+        (SELECT COUNT(*) FROM post_reactions r WHERE r.post_id = p.id AND r.reaction = 'support') AS reaction_count,
+        EXISTS(SELECT 1 FROM post_reactions r WHERE r.post_id = p.id AND r.user_id = ? AND r.reaction = 'support') AS viewer_reacted,
         (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'published') AS comment_count
        FROM posts p
        LEFT JOIN organizations o ON o.id = p.organization_id
@@ -1460,7 +1505,7 @@ async function renderSectionPage(env: Env, user: User, section: string, searchPa
        WHERE p.section = ? AND p.status = 'published'
        ORDER BY p.created_at DESC
        LIMIT 200`
-    ).bind(section).all<{
+    ).bind(user.id, section).all<{
       id: string;
       title: string;
       body: string;
@@ -1482,38 +1527,27 @@ async function renderSectionPage(env: Env, user: User, section: string, searchPa
       video_author_name: string | null;
       video_author_url: string | null;
       video_thumbnail_url: string | null;
+      reaction_count: number;
+      viewer_reacted: number;
       comment_count: number;
     }>(),
     getWritableOrganizations(env, user),
   ]);
   const visibleUnfilteredPosts = await filterVisiblePosts(env, user, posts.results ?? []);
-  const visiblePosts = applySectionFilters(visibleUnfilteredPosts, section, searchParams).slice(0, 40);
+  const filteredPosts = applySectionFilters(visibleUnfilteredPosts, section, searchParams);
+  const visiblePosts = filteredPosts.slice(offset, offset + pageSize);
   const commentPreviewMap = await getCommentPreviews(env, user, visiblePosts.map((post) => post.id));
 
   const canCreate = user.site_role === "site_admin" || writableOrganizations.length > 0;
-  const postItems = visiblePosts.length
-    ? section === "event"
-      ? visiblePosts.map((post) => renderEventFeedCard(post, commentPreviewMap.get(post.id) ?? [])).join("")
-      : visiblePosts
-        .map((post) => String.raw`
-          <li class="${post.image_url ? "with-image" : ""}">
-            ${post.image_url ? `<img class="list-thumb" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
-            <div class="list-copy">
-              <strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong>
-              <p class="muted">${escapeHtml(excerpt(post.body, 180))}</p>
-              <div class="meta">
-                ${post.organization_name ? renderOrganizationPill(post.organization_name, post.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
-                ${renderMemberLink(post.author_user_id, post.author_name || post.author_email, "badge")}
-                ${post.video_provider ? `<span class="badge">TikTok video</span>` : ""}
-                <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
-                <span class="badge">${Number(post.comment_count)} comments</span>
-              </div>
-              ${renderCommentPreviews(commentPreviewMap.get(post.id) ?? [])}
-            </div>
-          </li>
-        `)
-        .join("")
-    : `<li><strong>No ${escapeHtml(meta.pluralLower)} in your affiliations yet</strong><br /><span class="muted">When affiliated members or organizations publish here, the latest posts will appear in this section.</span></li>`;
+  const postItems = renderFeedItems(section, visiblePosts, commentPreviewMap, meta.pluralLower);
+  const hasMore = offset + pageSize < filteredPosts.length;
+  const feedFragment = String.raw`
+    ${postItems}
+    ${hasMore ? renderLoadMoreButton(section, searchParams, offset + pageSize) : ""}
+  `;
+  if (searchParams.get("load_more") === "1") {
+    return feedFragment;
+  }
   const heroPreviews = renderHeroPreviews(visiblePosts);
 
   return layout(meta.title, String.raw`
@@ -1543,11 +1577,50 @@ async function renderSectionPage(env: Env, user: User, section: string, searchPa
             <h2>Recent ${escapeHtml(meta.pluralLower)}</h2>
             <span class="badge">${visiblePosts.length} shown</span>
           </div>
-          <ul class="${section === "event" ? "event-card-list" : "compact-list"}">${postItems}</ul>
+          <ul id="${escapeHtml(section)}-feed" class="${section === "event" ? "event-card-list" : "compact-list"}">${feedFragment}</ul>
         </aside>
       </section>
     </section>
   `, user);
+}
+
+function renderFeedItems(section: string, visiblePosts: FeedPost[], commentPreviewMap: Map<string, CommentPreview[]>, pluralLower: string) {
+  if (!visiblePosts.length) {
+    return `<li><strong>No ${escapeHtml(pluralLower)} in your affiliations yet</strong><br /><span class="muted">When affiliated members or organizations publish here, the latest posts will appear in this section.</span></li>`;
+  }
+  return section === "event"
+    ? visiblePosts.map((post) => renderEventFeedCard(post, commentPreviewMap.get(post.id) ?? [])).join("")
+    : visiblePosts
+      .map((post) => String.raw`
+        <li class="${post.image_url ? "with-image" : ""}">
+          ${post.image_url ? `<img class="list-thumb" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
+          <div class="list-copy">
+            <strong><a href="/posts/${escapeHtml(post.id)}">${escapeHtml(post.title)}</a></strong>
+            <p class="muted">${escapeHtml(excerpt(post.body, 180))}</p>
+            <div class="meta">
+              ${post.organization_name ? renderOrganizationPill(post.organization_name, post.organization_logo_object_key) : `<span class="badge">Ecosystem-wide</span>`}
+              ${renderMemberLink(post.author_user_id, post.author_name || post.author_email, "badge")}
+              ${post.video_provider ? `<span class="badge">TikTok video</span>` : ""}
+              <span class="badge">${escapeHtml(formatDate(post.created_at))}</span>
+              <span class="badge">${Number(post.comment_count)} comments</span>
+            </div>
+            ${renderReactionControl(post)}
+            ${renderCommentPreviews(commentPreviewMap.get(post.id) ?? [])}
+          </div>
+        </li>
+      `)
+      .join("");
+}
+
+function renderLoadMoreButton(section: string, searchParams: URLSearchParams, nextOffset: number) {
+  const params = new URLSearchParams(searchParams);
+  params.set("offset", String(nextOffset));
+  params.set("load_more", "1");
+  return String.raw`
+    <li class="load-more-row">
+      <button class="secondary" type="button" hx-get="/${escapeHtml(sectionPath(section))}?${escapeHtml(params.toString())}" hx-target="closest li" hx-swap="outerHTML">Load more</button>
+    </li>
+  `;
 }
 
 function renderHeroPreviews(
@@ -1597,6 +1670,8 @@ type FeedPost = {
   video_author_name: string | null;
   video_author_url: string | null;
   video_thumbnail_url: string | null;
+  reaction_count: number;
+  viewer_reacted: number;
   comment_count: number;
 };
 
@@ -1701,6 +1776,7 @@ function renderEventFeedCard(post: FeedPost, comments: CommentPreview[]) {
           ${post.location_name ? `<span class="badge">${escapeHtml(post.location_name)}</span>` : ""}
           <span class="badge">${Number(post.comment_count)} comments</span>
         </div>
+        ${renderReactionControl(post)}
         ${renderCommentPreviews(comments)}
       </div>
     </li>
@@ -1732,6 +1808,19 @@ function renderCommentPreviews(comments: CommentPreview[]) {
   return String.raw`
     <div class="comment-preview">
       ${comments.map((comment) => `<p><strong>${renderMemberLink(comment.author_user_id, comment.author_name || comment.author_email)}</strong>: ${escapeHtml(excerpt(comment.body, 110))}</p>`).join("")}
+    </div>
+  `;
+}
+
+function renderReactionControl(post: { id: string; reaction_count?: number | null; viewer_reacted?: number | boolean | null }) {
+  const active = Boolean(Number(post.viewer_reacted || 0));
+  return String.raw`
+    <div class="social-actions" id="reactions-${escapeHtml(post.id)}">
+      <form method="post" action="/posts/${escapeHtml(post.id)}/reactions" hx-post="/posts/${escapeHtml(post.id)}/reactions" hx-target="#reactions-${escapeHtml(post.id)}" hx-swap="outerHTML">
+        <button class="reaction-button ${active ? "is-active" : ""}" type="submit">
+          ${active ? "Supporting" : "Support"} · ${Number(post.reaction_count || 0)}
+        </button>
+      </form>
     </div>
   `;
 }
@@ -1791,9 +1880,11 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
   const post = await env.DB.prepare(
     `SELECT p.id, p.section, p.title, p.body, p.visibility, p.status, p.created_at, p.organization_id,
       e.starts_at, e.ends_at, e.location_name, e.registration_url, e.external_url, e.image_url,
-      v.provider AS video_provider, v.source_url AS video_source_url, v.video_id, v.title AS video_title,
-      v.author_name AS video_author_name, v.author_url AS video_author_url, v.thumbnail_url AS video_thumbnail_url,
-      o.name AS organization_name, o.slug AS organization_slug, o.logo_object_key AS organization_logo_object_key,
+        v.provider AS video_provider, v.source_url AS video_source_url, v.video_id, v.title AS video_title,
+        v.author_name AS video_author_name, v.author_url AS video_author_url, v.thumbnail_url AS video_thumbnail_url,
+        (SELECT COUNT(*) FROM post_reactions r WHERE r.post_id = p.id AND r.reaction = 'support') AS reaction_count,
+        EXISTS(SELECT 1 FROM post_reactions r WHERE r.post_id = p.id AND r.user_id = ? AND r.reaction = 'support') AS viewer_reacted,
+        o.name AS organization_name, o.slug AS organization_slug, o.logo_object_key AS organization_logo_object_key,
       u.id AS author_user_id, u.name AS author_name, u.email AS author_email
      FROM posts p
      LEFT JOIN events e ON e.post_id = p.id
@@ -1802,7 +1893,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
      JOIN users u ON u.id = p.author_user_id
      WHERE p.id = ?`
   )
-    .bind(postId)
+    .bind(user.id, postId)
     .first<{
       id: string;
       section: string;
@@ -1825,6 +1916,8 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
       video_author_name: string | null;
       video_author_url: string | null;
       video_thumbnail_url: string | null;
+      reaction_count: number;
+      viewer_reacted: number;
       organization_name: string | null;
       organization_slug: string | null;
       organization_logo_object_key: string | null;
@@ -1858,6 +1951,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
           ${post.starts_at ? `<span class="badge">${escapeHtml(formatDate(post.starts_at))}</span>` : ""}
           ${post.location_name ? `<span class="badge">${escapeHtml(post.location_name)}</span>` : ""}
         </div>
+        ${renderReactionControl(post)}
         <div class="event-detail-body">
           ${post.image_url ? `<img class="event-photo" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
           <div class="event-detail-copy">
@@ -2154,9 +2248,13 @@ async function handleApproveEvent(request: Request, env: Env, user: User, postId
   )
     .bind(new Date().toISOString(), post.id)
     .run();
+  await notifyPostAuthor(env, user, post.id, "approval", "Your post was approved.");
   await writeAudit(env, user.id, `${post.section}.approved`, "post", post.id, {
     organization_id: post.organization_id || null,
   });
+  if (isHtmxRequest(request)) {
+    return html("");
+  }
   return redirect(returnTo);
 }
 
@@ -2174,6 +2272,9 @@ async function handleRejectEvent(request: Request, env: Env, user: User, postId:
   await writeAudit(env, user.id, `${post.section}.rejected`, "post", post.id, {
     organization_id: post.organization_id || null,
   });
+  if (isHtmxRequest(request)) {
+    return html("");
+  }
   return redirect(returnTo);
 }
 
@@ -2230,6 +2331,7 @@ async function handleCreatePost(request: Request, env: Env, user: User) {
   }
 
   await env.DB.batch(statements);
+  await createMentionNotifications(env, user, { postId, text: `${title} ${body}` });
 
   await writeAudit(env, user.id, videoEmbed ? "video.submitted" : "post.created", "post", postId, {
     section,
@@ -2264,12 +2366,212 @@ async function handleCreateComment(request: Request, env: Env, user: User, postI
   )
     .bind(commentId, post.id, user.id, body)
     .run();
+  await notifyPostAuthor(env, user, post.id, "comment", `${user.name || user.email} commented on your post.`);
+  await createMentionNotifications(env, user, { postId: post.id, commentId, text: body });
 
   await writeAudit(env, user.id, "comment.created", "comment", commentId, { post_id: post.id });
   if (isHtmxRequest(request)) {
     return html(renderCommentsPanel(await getVisiblePostComments(env, user, post.id)));
   }
   return redirect(`/posts/${post.id}`);
+}
+
+async function handleReactToPost(request: Request, env: Env, user: User, postId: string) {
+  const post = await env.DB.prepare("SELECT id, author_user_id, organization_id, visibility, status FROM posts WHERE id = ?")
+    .bind(postId)
+    .first<{ id: string; author_user_id: string; organization_id: string | null; visibility: string; status: string }>();
+
+  if (!post || post.status !== "published") {
+    throw new HttpError(404, "Post not found", "That post does not exist or is not published.");
+  }
+
+  await requireCanReadPost(env, user, post.organization_id, post.visibility);
+  await requireCanViewPostAudience(env, user, post.author_user_id, post.organization_id);
+
+  const existing = await env.DB.prepare(
+    "SELECT post_id FROM post_reactions WHERE post_id = ? AND user_id = ? AND reaction = 'support'"
+  )
+    .bind(post.id, user.id)
+    .first<{ post_id: string }>();
+
+  if (existing) {
+    await env.DB.prepare(
+      "DELETE FROM post_reactions WHERE post_id = ? AND user_id = ? AND reaction = 'support'"
+    )
+      .bind(post.id, user.id)
+      .run();
+  } else {
+    await env.DB.prepare(
+      "INSERT INTO post_reactions (post_id, user_id, reaction) VALUES (?, ?, 'support')"
+    )
+      .bind(post.id, user.id)
+      .run();
+  }
+
+  await writeAudit(env, user.id, existing ? "reaction.removed" : "reaction.created", "post", post.id, {});
+  const state = await getPostReactionState(env, user, post.id);
+  return html(renderReactionControl({ id: post.id, ...state }));
+}
+
+async function getPostReactionState(env: Env, user: User, postId: string) {
+  const row = await env.DB.prepare(
+    `SELECT
+      (SELECT COUNT(*) FROM post_reactions WHERE post_id = ? AND reaction = 'support') AS reaction_count,
+      EXISTS(SELECT 1 FROM post_reactions WHERE post_id = ? AND user_id = ? AND reaction = 'support') AS viewer_reacted`
+  )
+    .bind(postId, postId, user.id)
+    .first<{ reaction_count: number; viewer_reacted: number }>();
+  return {
+    reaction_count: Number(row?.reaction_count || 0),
+    viewer_reacted: Number(row?.viewer_reacted || 0),
+  };
+}
+
+async function notifyPostAuthor(env: Env, actor: User, postId: string, type: "comment" | "approval", body: string) {
+  const post = await env.DB.prepare("SELECT author_user_id FROM posts WHERE id = ?")
+    .bind(postId)
+    .first<{ author_user_id: string }>();
+  if (!post || post.author_user_id === actor.id) {
+    return;
+  }
+  await createNotification(env, {
+    userId: post.author_user_id,
+    actorUserId: actor.id,
+    postId,
+    type,
+    body,
+  });
+}
+
+async function createMentionNotifications(
+  env: Env,
+  actor: User,
+  mention: { postId?: string; commentId?: string; text: string }
+) {
+  const handles = [...new Set([...mention.text.matchAll(/@([a-z0-9._-]{2,80})/gi)].map((match) => match[1].toLowerCase()))];
+  if (!handles.length) {
+    return;
+  }
+  const users = await env.DB.prepare(
+    "SELECT id, email, name FROM users WHERE status = 'active'"
+  ).all<{ id: string; email: string; name: string | null }>();
+  const matched = (users.results ?? []).filter((member) => {
+    const candidates = [
+      member.email.split("@")[0],
+      member.name || "",
+      slugify(member.name || ""),
+    ].map((value) => value.toLowerCase().replace(/^@/, ""));
+    return member.id !== actor.id && candidates.some((candidate) => handles.includes(candidate));
+  });
+
+  for (const member of matched) {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO post_mentions (id, post_id, comment_id, mentioned_user_id, mentioned_by_user_id)
+         VALUES (?, ?, ?, ?, ?)`
+      ).bind(crypto.randomUUID(), mention.postId || null, mention.commentId || null, member.id, actor.id),
+      notificationStatement(env, {
+        userId: member.id,
+        actorUserId: actor.id,
+        postId: mention.postId || null,
+        commentId: mention.commentId || null,
+        type: "mention",
+        body: `${actor.name || actor.email} mentioned you.`,
+      }),
+    ]);
+  }
+}
+
+async function createNotification(
+  env: Env,
+  notification: { userId: string; actorUserId: string; postId?: string | null; commentId?: string | null; type: "comment" | "mention" | "approval"; body: string }
+) {
+  await notificationStatement(env, notification).run();
+}
+
+function notificationStatement(
+  env: Env,
+  notification: { userId: string; actorUserId: string; postId?: string | null; commentId?: string | null; type: "comment" | "mention" | "approval"; body: string }
+) {
+  return env.DB.prepare(
+    `INSERT INTO notifications (id, user_id, actor_user_id, post_id, comment_id, type, body)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    crypto.randomUUID(),
+    notification.userId,
+    notification.actorUserId,
+    notification.postId || null,
+    notification.commentId || null,
+    notification.type,
+    notification.body
+  );
+}
+
+async function renderNotifications(env: Env, user: User) {
+  const notifications = await env.DB.prepare(
+    `SELECT n.id, n.type, n.body, n.post_id, n.read_at, n.created_at,
+      u.id AS actor_user_id, u.name AS actor_name, u.email AS actor_email
+     FROM notifications n
+     LEFT JOIN users u ON u.id = n.actor_user_id
+     WHERE n.user_id = ?
+     ORDER BY n.created_at DESC
+     LIMIT 60`
+  )
+    .bind(user.id)
+    .all<{
+      id: string;
+      type: string;
+      body: string;
+      post_id: string | null;
+      read_at: string | null;
+      created_at: string;
+      actor_user_id: string | null;
+      actor_name: string | null;
+      actor_email: string | null;
+    }>();
+  const rows = notifications.results ?? [];
+  const unreadIds = rows.filter((row) => !row.read_at).map((row) => row.id);
+  if (unreadIds.length) {
+    for (const id of unreadIds) {
+      await env.DB.prepare("UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ?")
+        .bind(new Date().toISOString(), id, user.id)
+        .run();
+    }
+  }
+  const items = rows.length
+    ? rows.map((notification) => String.raw`
+      <li class="${notification.read_at ? "" : "notification-unread"}">
+        <div class="list-copy">
+          <strong>${escapeHtml(notification.body)}</strong>
+          <div class="meta">
+            <span class="badge">${escapeHtml(notification.type)}</span>
+            <span class="badge">${escapeHtml(formatDate(notification.created_at))}</span>
+            ${notification.actor_user_id ? renderMemberLink(notification.actor_user_id, notification.actor_name || notification.actor_email || "Member", "badge") : ""}
+          </div>
+          ${notification.post_id ? `<div class="actions"><a class="button secondary" href="/posts/${escapeHtml(notification.post_id)}">Open post</a></div>` : ""}
+        </div>
+      </li>
+    `).join("")
+    : `<li><strong>No notifications yet</strong><br /><span class="muted">Replies, mentions, and approvals will appear here.</span></li>`;
+
+  return layout("Notifications", String.raw`
+    <section class="dashboard content-page">
+      <div class="dashboard-hero panel">
+        <div>
+          <p class="eyebrow">Member activity</p>
+          <h1>Notifications</h1>
+          <p class="lede">Replies, mentions, and approval updates from your ecosystem activity.</p>
+        </div>
+      </div>
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Recent activity</h2>
+          <span class="badge">${unreadIds.length} unread</span>
+        </div>
+        <ul class="compact-list">${items}</ul>
+      </section>
+    </section>
+  `, user);
 }
 
 async function renderAdmin(env: Env, user: User) {
@@ -4102,6 +4404,7 @@ function renderNav(user: User | null) {
         ${user ? `<a href="/projects">Projects</a>` : ""}
         ${user ? `<a href="/updates">Updates</a>` : ""}
         ${user ? `<a href="/members">Members</a>` : ""}
+        ${user ? `<a href="/notifications">Notifications</a>` : ""}
         ${user?.site_role === "site_admin" ? `<a href="/admin">Admin</a>` : ""}
         ${!user ? `<a href="/request-invite">Request invite</a>` : `<a href="/profile">${escapeHtml(user.name || user.email)}</a>`}
       </div>
@@ -4444,7 +4747,7 @@ function renderPendingEventReview(events: PendingEvent[], returnTo: string) {
         .map((event) => {
           const sourceUrl = event.external_url || event.source_url;
           return String.raw`
-            <li class="${event.image_url ? "with-image" : ""}">
+            <li id="review-${escapeHtml(event.id)}" class="${event.image_url ? "with-image" : ""}">
               ${event.image_url ? `<img class="list-thumb" src="${escapeHtml(event.image_url)}" alt="" loading="lazy" />` : ""}
               <div class="list-copy">
                 <strong>${escapeHtml(event.title)}</strong>
@@ -4456,11 +4759,11 @@ function renderPendingEventReview(events: PendingEvent[], returnTo: string) {
                   ${event.scraped_at ? `<span class="badge">Scraped ${escapeHtml(formatDate(event.scraped_at))}</span>` : ""}
                 </div>
                 <div class="review-actions">
-                  <form method="post" action="/posts/${escapeHtml(event.id)}/approve">
+                  <form method="post" action="/posts/${escapeHtml(event.id)}/approve" hx-post="/posts/${escapeHtml(event.id)}/approve" hx-target="#review-${escapeHtml(event.id)}" hx-swap="outerHTML">
                     <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
                     <button class="primary" type="submit">Approve</button>
                   </form>
-                  <form method="post" action="/posts/${escapeHtml(event.id)}/reject">
+                  <form method="post" action="/posts/${escapeHtml(event.id)}/reject" hx-post="/posts/${escapeHtml(event.id)}/reject" hx-target="#review-${escapeHtml(event.id)}" hx-swap="outerHTML">
                     <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
                     <button class="danger" type="submit">Reject</button>
                   </form>
@@ -4520,7 +4823,7 @@ function renderPendingVideoReview(videos: PendingVideo[], returnTo: string) {
   const items = videos.length
     ? videos
         .map((video) => String.raw`
-          <li class="${video.thumbnail_url ? "with-image" : ""}">
+          <li id="review-${escapeHtml(video.id)}" class="${video.thumbnail_url ? "with-image" : ""}">
             ${video.thumbnail_url ? `<img class="list-thumb" src="${escapeHtml(video.thumbnail_url)}" alt="" loading="lazy" />` : ""}
             <div class="list-copy">
               <strong>${escapeHtml(video.title)}</strong>
@@ -4533,11 +4836,11 @@ function renderPendingVideoReview(videos: PendingVideo[], returnTo: string) {
               </div>
               ${video.video_title ? `<p class="muted">${escapeHtml(excerpt(video.video_title, 180))}</p>` : ""}
               <div class="review-actions">
-                <form method="post" action="/posts/${escapeHtml(video.id)}/approve">
+                <form method="post" action="/posts/${escapeHtml(video.id)}/approve" hx-post="/posts/${escapeHtml(video.id)}/approve" hx-target="#review-${escapeHtml(video.id)}" hx-swap="outerHTML">
                   <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
                   <button class="primary" type="submit">Approve</button>
                 </form>
-                <form method="post" action="/posts/${escapeHtml(video.id)}/reject">
+                <form method="post" action="/posts/${escapeHtml(video.id)}/reject" hx-post="/posts/${escapeHtml(video.id)}/reject" hx-target="#review-${escapeHtml(video.id)}" hx-swap="outerHTML">
                   <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
                   <button class="danger" type="submit">Reject</button>
                 </form>
@@ -4811,6 +5114,10 @@ function sectionMeta(section: string) {
 
 function sectionLabel(section: string) {
   return sectionMeta(section).title;
+}
+
+function sectionPath(section: string) {
+  return sectionMeta(section).path.replace(/^\//, "");
 }
 
 function formatDate(value: string) {

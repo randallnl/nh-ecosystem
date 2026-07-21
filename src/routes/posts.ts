@@ -18,6 +18,7 @@ type PostsRouterDeps<Env> = {
   handleCreatePost(request: Request, env: Env, user: User): Promise<Response>;
   handleRejectPost(request: Request, env: Env, user: User, postId: string): Promise<Response>;
   handleRemovePost(env: Env, user: User, postId: string): Promise<Response>;
+  handleReactToPost(request: Request, env: Env, user: User, postId: string): Promise<Response>;
   handleUpdatePost(request: Request, env: Env, user: User, postId: string): Promise<Response>;
   html(body: string, status?: number, headers?: HeadersInit): Response;
 };
@@ -70,6 +71,13 @@ export function createPostsRouter<Env>(deps: PostsRouterDeps<Env>) {
     deps.assertSameOrigin(request);
     const user = await deps.currentUser(request, c.env);
     return deps.handleCreateComment(request, c.env, user, routeParam(c.req.param("postId")));
+  });
+
+  posts.post("/:postId/reactions", async (c) => {
+    const request = c.req.raw;
+    deps.assertSameOrigin(request);
+    const user = await deps.currentUser(request, c.env);
+    return deps.handleReactToPost(request, c.env, user, routeParam(c.req.param("postId")));
   });
 
   posts.get("/:postId", async (c) => {
