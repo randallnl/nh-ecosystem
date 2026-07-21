@@ -2456,12 +2456,7 @@ async function createMentionNotifications(
     "SELECT id, email, name FROM users WHERE status = 'active'"
   ).all<{ id: string; email: string; name: string | null }>();
   const matched = (users.results ?? []).filter((member) => {
-    const candidates = [
-      member.email.split("@")[0],
-      member.name || "",
-      slugify(member.name || ""),
-    ].map((value) => value.toLowerCase().replace(/^@/, ""));
-    return member.id !== actor.id && candidates.some((candidate) => handles.includes(candidate));
+    return member.id !== actor.id && mentionCandidates(member).some((candidate) => handles.includes(candidate));
   });
 
   for (const member of matched) {
@@ -2480,6 +2475,23 @@ async function createMentionNotifications(
       }),
     ]);
   }
+}
+
+function mentionCandidates(member: { email: string; name: string | null }) {
+  const localEmail = member.email.split("@")[0] || "";
+  const name = member.name || "";
+  const rawCandidates = [
+    localEmail,
+    ...localEmail.split(/[._-]+/),
+    name,
+    slugify(name),
+    ...name.split(/\s+/),
+  ];
+  return [...new Set(rawCandidates.map(normalizeMentionHandle).filter(Boolean))];
+}
+
+function normalizeMentionHandle(value: string) {
+  return value.toLowerCase().replace(/^@/, "").replace(/[^a-z0-9._-]+/g, "");
 }
 
 async function createNotification(
