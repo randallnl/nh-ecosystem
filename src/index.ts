@@ -2460,11 +2460,12 @@ async function createMentionNotifications(
   });
 
   for (const member of matched) {
+    const mentionPostId = mention.commentId ? null : mention.postId || null;
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO post_mentions (id, post_id, comment_id, mentioned_user_id, mentioned_by_user_id)
          VALUES (?, ?, ?, ?, ?)`
-      ).bind(crypto.randomUUID(), mention.postId || null, mention.commentId || null, member.id, actor.id),
+      ).bind(crypto.randomUUID(), mentionPostId, mention.commentId || null, member.id, actor.id),
       notificationStatement(env, {
         userId: member.id,
         actorUserId: actor.id,
