@@ -62,19 +62,20 @@ const FROM_NAME = "NH Solidarity Ecosystem";
 const baseStyles = String.raw`
   :root {
     color-scheme: light;
-    --ink: #10233f;
-    --muted: #5b6f88;
-    --paper: #f6faff;
-    --panel: rgba(255, 255, 255, 0.82);
-    --line: rgba(154, 184, 217, 0.42);
-    --accent: #1f67b1;
-    --accent-2: #63a5df;
-    --accent-3: #f2c85f;
-    --soft-blue: #e9f4ff;
-    --danger: #b33b4a;
-    --radius-xl: 34px;
-    --radius-lg: 26px;
-    --radius-md: 18px;
+    --ink: #0f172a;
+    --muted: #64748b;
+    --paper: #f8fafc;
+    --panel: #ffffff;
+    --line: #e2e8f0;
+    --line-strong: #cbd5e1;
+    --accent: #2563eb;
+    --accent-2: #0ea5e9;
+    --accent-3: #0369a1;
+    --soft-blue: #eff6ff;
+    --danger: #dc2626;
+    --radius-xl: 22px;
+    --radius-lg: 16px;
+    --radius-md: 12px;
     --radius-pill: 999px;
   }
 
@@ -89,45 +90,39 @@ const baseStyles = String.raw`
       Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
       "Segoe UI", sans-serif;
     color: var(--ink);
-    background:
-      radial-gradient(circle at 18% 16%, rgba(99, 165, 223, 0.24), transparent 31%),
-      linear-gradient(140deg, #fbfdff 0%, #eef7ff 48%, #f8fbff 100%);
+    background: var(--paper);
   }
 
   body::before {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    content: "";
-    background-image:
-      linear-gradient(rgba(31, 103, 177, 0.05) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(31, 103, 177, 0.05) 1px, transparent 1px);
-    background-size: 44px 44px;
-    mask-image: linear-gradient(to bottom, black, transparent 76%);
+    content: none;
   }
 
   main {
     position: relative;
-    width: min(1180px, calc(100% - 32px));
+    width: min(1280px, calc(100% - 32px));
     min-height: 100vh;
     margin: 0 auto;
     display: grid;
     grid-template-rows: auto 1fr auto;
-    gap: 34px;
-    padding: 28px 0 38px;
+    gap: 28px;
+    padding: 16px 0 38px;
   }
 
   .nav {
+    position: sticky;
+    top: 0;
+    z-index: 30;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 18px;
-    padding: 12px 14px 12px 12px;
+    padding: 12px 6px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-pill);
-    background: rgba(255, 255, 255, 0.72);
-    box-shadow: 0 18px 60px rgba(31, 82, 135, 0.08);
-    backdrop-filter: blur(18px);
+    border-left: 0;
+    border-right: 0;
+    border-radius: 0;
+    background: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(14px);
   }
 
   .brand {
@@ -138,6 +133,7 @@ const baseStyles = String.raw`
     color: var(--ink);
     font-weight: 850;
     text-decoration: none;
+    letter-spacing: 0.01em;
   }
 
   .brand-mark {
@@ -147,8 +143,7 @@ const baseStyles = String.raw`
     place-items: center;
     border-radius: var(--radius-pill);
     color: #ffffff;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    box-shadow: 0 10px 24px rgba(31, 103, 177, 0.25);
+    background: var(--ink);
   }
 
   .nav-links,
@@ -171,23 +166,45 @@ const baseStyles = String.raw`
     align-items: center;
     justify-content: center;
     min-height: 38px;
-    padding: 8px 14px;
+    padding: 8px 12px;
     border-radius: var(--radius-pill);
     font: inherit;
     font-size: 0.92rem;
-    font-weight: 750;
+    font-weight: 700;
     text-decoration: none;
   }
 
   .nav-links a,
   .nav-links span {
-    color: var(--muted);
+    position: relative;
+    color: #475569;
+  }
+
+  .nav-links a::after {
+    position: absolute;
+    right: 12px;
+    bottom: 4px;
+    left: 12px;
+    height: 2px;
+    content: "";
+    background: var(--accent);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.2s ease;
+  }
+
+  .nav-links a:hover {
+    color: var(--ink);
+  }
+
+  .nav-links a:hover::after {
+    transform: scaleX(1);
   }
 
   .hero {
     display: grid;
     grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
-    gap: 42px;
+    gap: 36px;
     align-items: center;
   }
 
@@ -195,26 +212,29 @@ const baseStyles = String.raw`
   .badge {
     display: inline-flex;
     align-items: center;
-    min-height: 34px;
+    min-height: 30px;
     border-radius: var(--radius-pill);
     font-weight: 850;
   }
 
   .eyebrow {
-    gap: 8px;
-    margin: 0 0 18px;
-    padding: 7px 13px;
-    border: 1px solid rgba(31, 103, 177, 0.16);
+    gap: 7px;
+    margin: 0 0 16px;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
     color: var(--accent);
-    background: rgba(255, 255, 255, 0.76);
-    font-size: 0.82rem;
+    background: var(--soft-blue);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   h1 {
     margin: 0;
-    max-width: 780px;
-    font-size: clamp(3.3rem, 8.4vw, 7.35rem);
-    line-height: 0.88;
+    max-width: 840px;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: clamp(2.8rem, 7vw, 6.4rem);
+    line-height: 0.95;
     letter-spacing: 0;
   }
 
@@ -226,14 +246,14 @@ const baseStyles = String.raw`
 
   .lede {
     max-width: 690px;
-    margin: 28px 0 0;
+    margin: 22px 0 0;
     color: var(--muted);
-    font-size: clamp(1.08rem, 2vw, 1.34rem);
+    font-size: clamp(1rem, 1.7vw, 1.18rem);
     line-height: 1.58;
   }
 
   .actions {
-    margin-top: 32px;
+    margin-top: 26px;
   }
 
   .button,
@@ -246,38 +266,38 @@ const baseStyles = String.raw`
   button.primary {
     color: #ffffff;
     background: var(--accent);
-    box-shadow: 0 16px 34px rgba(31, 103, 177, 0.25);
+    box-shadow: 0 10px 24px rgba(37, 99, 235, 0.18);
   }
 
   .button.secondary,
   button.secondary {
     color: var(--accent);
-    border-color: rgba(31, 103, 177, 0.18);
-    background: rgba(255, 255, 255, 0.7);
+    border-color: var(--line);
+    background: #ffffff;
   }
 
   .button.danger,
   button.danger {
     color: var(--danger);
-    border-color: rgba(179, 59, 74, 0.2);
-    background: rgba(255, 255, 255, 0.7);
+    border-color: #fecaca;
+    background: #ffffff;
   }
 
   .status {
-    margin-top: 24px;
+    margin-top: 20px;
   }
 
   .status span {
     display: inline-flex;
     align-items: center;
     min-height: 34px;
-    padding: 7px 12px;
+    padding: 6px 10px;
     border: 1px solid var(--line);
     border-radius: var(--radius-pill);
-    background: rgba(255, 255, 255, 0.68);
-    color: #27425f;
-    font-size: 0.88rem;
-    font-weight: 750;
+    background: #ffffff;
+    color: #475569;
+    font-size: 0.82rem;
+    font-weight: 700;
   }
 
   .panel,
@@ -285,23 +305,18 @@ const baseStyles = String.raw`
   .tile {
     border: 1px solid var(--line);
     background: var(--panel);
-    box-shadow: 0 28px 90px rgba(31, 82, 135, 0.14);
-    backdrop-filter: blur(22px);
+    box-shadow: 0 14px 36px rgba(15, 23, 42, 0.06);
   }
 
   .panel {
     position: relative;
-    overflow: hidden;
-    border-radius: var(--radius-xl);
+    overflow: clip;
+    border-radius: var(--radius-lg);
     padding: 22px;
   }
 
   .panel::before {
-    position: absolute;
-    inset: 0 0 auto;
-    height: 6px;
-    content: "";
-    background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
+    content: none;
   }
 
   .panel-head {
@@ -314,14 +329,17 @@ const baseStyles = String.raw`
 
   .panel h2 {
     margin: 0;
-    font-size: 1.08rem;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 1.25rem;
   }
 
   .badge {
-    padding: 6px 10px;
+    padding: 5px 9px;
     color: var(--accent);
     background: var(--soft-blue);
-    font-size: 0.78rem;
+    font-size: 0.68rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
     text-decoration: none;
   }
 
@@ -339,9 +357,9 @@ const baseStyles = String.raw`
     gap: 12px;
     align-items: start;
     padding: 12px;
-    border: 1px solid rgba(216, 228, 242, 0.68);
+    border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: rgba(255, 255, 255, 0.64);
+    background: #ffffff;
     color: var(--muted);
     line-height: 1.45;
   }
@@ -368,7 +386,7 @@ const baseStyles = String.raw`
     color: #ffffff;
     background: linear-gradient(135deg, var(--accent), var(--accent-2));
     font-weight: 900;
-    box-shadow: 0 14px 28px rgba(31, 103, 177, 0.18);
+    box-shadow: 0 10px 22px rgba(37, 99, 235, 0.16);
   }
 
   img.avatar {
@@ -408,7 +426,7 @@ const baseStyles = String.raw`
     width: auto;
     min-height: 36px;
     padding: 7px 12px;
-    border: 1px solid rgba(31, 103, 177, 0.18);
+    border: 1px solid var(--line);
     border-radius: var(--radius-pill);
     color: var(--accent);
     background: var(--soft-blue);
@@ -433,15 +451,15 @@ const baseStyles = String.raw`
 
   .bar div,
   .tile {
-    min-height: 138px;
+    min-height: 124px;
     padding: 18px;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
   }
 
   .bar div {
     border: 1px solid var(--line);
-    background: rgba(255, 255, 255, 0.72);
-    box-shadow: 0 18px 52px rgba(31, 82, 135, 0.08);
+    background: #ffffff;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
   }
 
   .bar strong,
@@ -506,7 +524,7 @@ const baseStyles = String.raw`
     border-radius: var(--radius-md);
     padding: 11px 13px;
     color: var(--ink);
-    background: rgba(255, 255, 255, 0.76);
+    background: #ffffff;
     font: inherit;
   }
 
@@ -525,7 +543,7 @@ const baseStyles = String.raw`
     border: 1px solid rgba(31, 103, 177, 0.16);
     border-radius: var(--radius-md);
     color: var(--muted);
-    background: rgba(233, 244, 255, 0.74);
+    background: var(--soft-blue);
     line-height: 1.45;
   }
 
@@ -553,7 +571,7 @@ const baseStyles = String.raw`
   }
 
   .content-page {
-    width: min(920px, 100%);
+    width: min(980px, 100%);
     margin-inline: auto;
   }
 
@@ -561,8 +579,9 @@ const baseStyles = String.raw`
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(280px, 0.48fr);
     gap: 24px;
-    padding: 26px;
-    border-radius: var(--radius-xl);
+    padding: 28px;
+    border-radius: var(--radius-lg);
+    border-top: 4px solid var(--ink);
   }
 
   .dashboard-hero > .stack {
@@ -597,9 +616,15 @@ const baseStyles = String.raw`
     display: grid;
     gap: 8px;
     padding: 12px;
-    border: 1px solid rgba(216, 228, 242, 0.74);
-    border-radius: var(--radius-lg);
-    background: rgba(255, 255, 255, 0.66);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #ffffff;
+    transition: border-color 0.18s ease, transform 0.18s ease;
+  }
+
+  .post-preview:hover {
+    border-color: var(--line-strong);
+    transform: translateY(-2px);
   }
 
   .post-preview a {
@@ -617,6 +642,7 @@ const baseStyles = String.raw`
     aspect-ratio: 16 / 9;
     object-fit: cover;
     border-radius: var(--radius-md);
+    background: #e2e8f0;
   }
 
   .video-embed-card {
@@ -631,7 +657,7 @@ const baseStyles = String.raw`
     aspect-ratio: 9 / 16;
     object-fit: cover;
     border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
     background: var(--soft-blue);
   }
 
@@ -646,12 +672,13 @@ const baseStyles = String.raw`
     max-height: 360px;
     object-fit: contain;
     border-radius: var(--radius-md);
+    background: #f1f5f9;
   }
 
   .event-detail-title {
     max-width: 860px;
-    font-size: clamp(2.2rem, 5vw, 4.4rem);
-    line-height: 0.98;
+    font-size: clamp(2rem, 4vw, 3.7rem);
+    line-height: 1.03;
   }
 
   .event-detail-body {
@@ -670,7 +697,7 @@ const baseStyles = String.raw`
   .event-detail-copy .lede {
     margin-top: 0;
     color: #1b2f4a;
-    font-size: 1.04rem;
+    font-size: 1rem;
     line-height: 1.58;
   }
 
@@ -690,7 +717,7 @@ const baseStyles = String.raw`
   .org-logo.large {
     width: 64px;
     height: 64px;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
   }
 
   .dashboard-grid {
@@ -704,6 +731,7 @@ const baseStyles = String.raw`
 
   .composer-panel {
     padding: 18px;
+    border-top: 0;
   }
 
   .composer {
@@ -712,7 +740,7 @@ const baseStyles = String.raw`
 
   .composer input[name="title"] {
     min-height: 56px;
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-md);
     padding-inline: 18px;
     font-weight: 750;
   }
@@ -747,9 +775,15 @@ const baseStyles = String.raw`
 
   .compact-list li {
     padding: 12px;
-    border: 1px solid rgba(216, 228, 242, 0.68);
+    border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: rgba(255, 255, 255, 0.64);
+    background: #ffffff;
+    transition: border-color 0.18s ease, transform 0.18s ease;
+  }
+
+  .compact-list li:hover {
+    border-color: var(--line-strong);
+    transform: translateY(-1px);
   }
 
   .compact-list li.with-image {
@@ -764,6 +798,7 @@ const baseStyles = String.raw`
     height: 135px;
     object-fit: cover;
     border-radius: var(--radius-md);
+    background: #e2e8f0;
   }
 
   .list-copy {
@@ -785,7 +820,7 @@ const baseStyles = String.raw`
 
   .comment-preview p {
     margin: 0;
-    color: #314c69;
+    color: #334155;
     font-size: 0.88rem;
     line-height: 1.42;
   }
@@ -812,10 +847,16 @@ const baseStyles = String.raw`
     grid-template-columns: 128px minmax(0, 1fr);
     gap: 14px;
     padding: 14px;
-    border: 1px solid rgba(154, 184, 217, 0.48);
-    border-radius: var(--radius-lg);
-    background: rgba(255, 255, 255, 0.76);
-    box-shadow: 0 18px 46px rgba(31, 82, 135, 0.1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #ffffff;
+    box-shadow: none;
+    transition: border-color 0.18s ease, transform 0.18s ease;
+  }
+
+  .event-card:hover {
+    border-color: var(--line-strong);
+    transform: translateY(-2px);
   }
 
   .event-card.no-image {
@@ -845,7 +886,7 @@ const baseStyles = String.raw`
     padding: 6px 8px;
     border-radius: var(--radius-pill);
     color: #ffffff;
-    background: linear-gradient(160deg, var(--accent), #2f7fc5);
+    background: var(--ink);
     text-align: center;
   }
 
