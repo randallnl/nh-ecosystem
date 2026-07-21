@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { createPostsRouter } from "./routes/posts";
 
 interface Env {
   DB: D1Database;
@@ -1028,9 +1029,46 @@ const baseStyles = String.raw`
 
 const app = new Hono<{ Bindings: Env }>();
 
+app.route(
+  "/posts",
+  createPostsRouter<Env>({
+    assertSameOrigin,
+    currentUser: currentRequestUser,
+    renderEventEditPage,
+    renderPostDetail,
+    handleApprovePost: handleApproveEvent,
+    handleCreateComment,
+    handleCreatePost,
+    handleRejectPost: handleRejectEvent,
+    handleRemovePost: handleRemoveEvent,
+    handleUpdatePost: handleUpdateEvent,
+    html,
+  })
+);
+
 app.all("*", (c) => handleRequest(c.req.raw, c.env));
 
+app.onError((error) => handleRouteError(error));
+
 export default app;
+
+async function currentRequestUser(request: Request, env: Env) {
+  const session = await getSession(request, env);
+  return requireUser(session.user);
+}
+
+function handleRouteError(error: Error) {
+  if (error instanceof RedirectError) {
+    return redirect(error.location);
+  }
+
+  if (error instanceof HttpError) {
+    return html(renderError(error.title, error.message), error.status);
+  }
+
+  console.error(error);
+  return html(renderError("Something went sideways", "The request could not be completed."), 500);
+}
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -1153,59 +1191,6 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       if (request.method === "GET" && section) {
         const user = requireUser(session.user);
         return html(await renderSectionPage(env, user, section, url.searchParams));
-      }
-
-      if (request.method === "POST" && url.pathname === "/posts") {
-        assertSameOrigin(request);
-        const user = requireUser(session.user);
-        return handleCreatePost(request, env, user);
-      }
-
-      if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/approve")) {
-        assertSameOrigin(request);
-        const user = requireUser(session.user);
-        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/approve", "")).split("/")[0];
-        return handleApproveEvent(request, env, user, postId);
-      }
-
-      if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/reject")) {
-        assertSameOrigin(request);
-        const user = requireUser(session.user);
-        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/reject", "")).split("/")[0];
-        return handleRejectEvent(request, env, user, postId);
-      }
-
-      if (request.method === "GET" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/edit")) {
-        const user = requireUser(session.user);
-        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/edit", "")).split("/")[0];
-        return html(await renderEventEditPage(env, user, postId));
-      }
-
-      if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/edit")) {
-        assertSameOrigin(request);
-        const user = requireUser(session.user);
-        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/edit", "")).split("/")[0];
-        return handleUpdateEvent(request, env, user, postId);
-      }
-
-      if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/delete")) {
-        assertSameOrigin(request);
-        const user = requireUser(session.user);
-        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/delete", "")).split("/")[0];
-        return handleRemoveEvent(env, user, postId);
-      }
-
-      if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/comments")) {
-        assertSameOrigin(request);
-        const user = requireUser(session.user);
-        const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/comments", "")).split("/")[0];
-        return handleCreateComment(request, env, user, postId);
-      }
-
-      if (request.method === "GET" && url.pathname.startsWith("/posts/")) {
-        const user = requireUser(session.user);
-        const postId = decodeURIComponent(url.pathname.replace("/posts/", "")).split("/")[0];
-        return html(await renderPostDetail(env, user, postId));
       }
 
       if (request.method === "GET" && url.pathname === "/members") {
