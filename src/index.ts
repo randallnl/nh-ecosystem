@@ -1,3 +1,5 @@
+import { Hono } from "hono";
+
 interface Env {
   DB: D1Database;
   ASSETS: R2Bucket;
@@ -738,6 +740,10 @@ const baseStyles = String.raw`
     margin-top: 0;
   }
 
+  [x-cloak] {
+    display: none !important;
+  }
+
   .composer input[name="title"] {
     min-height: 56px;
     border-radius: var(--radius-md);
@@ -750,7 +756,8 @@ const baseStyles = String.raw`
     gap: 14px;
   }
 
-  .composer:focus-within .composer-extra {
+  .composer:focus-within .composer-extra,
+  .composer-extra[style*="display: block"] {
     display: grid;
   }
 
@@ -1019,8 +1026,13 @@ const baseStyles = String.raw`
   }
 `;
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+const app = new Hono<{ Bindings: Env }>();
+
+app.all("*", (c) => handleRequest(c.req.raw, c.env));
+
+export default app;
+
+async function handleRequest(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     try {
@@ -1183,17 +1195,17 @@ export default {
         return handleRemoveEvent(env, user, postId);
       }
 
-      if (request.method === "GET" && url.pathname.startsWith("/posts/")) {
-        const user = requireUser(session.user);
-        const postId = decodeURIComponent(url.pathname.replace("/posts/", "")).split("/")[0];
-        return html(await renderPostDetail(env, user, postId));
-      }
-
       if (request.method === "POST" && url.pathname.startsWith("/posts/") && url.pathname.endsWith("/comments")) {
         assertSameOrigin(request);
         const user = requireUser(session.user);
         const postId = decodeURIComponent(url.pathname.replace("/posts/", "").replace("/comments", "")).split("/")[0];
         return handleCreateComment(request, env, user, postId);
+      }
+
+      if (request.method === "GET" && url.pathname.startsWith("/posts/")) {
+        const user = requireUser(session.user);
+        const postId = decodeURIComponent(url.pathname.replace("/posts/", "")).split("/")[0];
+        return html(await renderPostDetail(env, user, postId));
       }
 
       if (request.method === "GET" && url.pathname === "/members") {
@@ -1244,8 +1256,7 @@ export default {
       console.error(error);
       return html(renderError("Something went sideways", "The request could not be completed."), 500);
     }
-  },
-} satisfies ExportedHandler<Env>;
+}
 
 function renderLanding(user: User | null) {
   const primaryAction = user
@@ -1761,13 +1772,13 @@ function renderPostForm(section: string, organizations: Array<{ id: string; name
   ].join("");
 
   return String.raw`
-    <form class="composer" method="post" action="/posts">
+    <form class="composer" method="post" action="/posts" x-data="{ open: false }">
       <input name="section" type="hidden" value="${escapeHtml(section)}" />
       <label>
         <span class="sr-only">Title</span>
-        <input name="title" type="text" required placeholder="Create ${escapeHtml(sectionMeta(section).singularLower)}" />
+        <input name="title" type="text" required placeholder="Create ${escapeHtml(sectionMeta(section).singularLower)}" x-on:focus="open = true" x-on:click="open = true" />
       </label>
-      <div class="composer-extra">
+      <div class="composer-extra" x-show="open" x-transition>
         <label>
           Organization
           <select name="organization_id" ${organizationOptions ? "" : "disabled"}>
@@ -1845,21 +1856,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
   await requireCanViewPostAudience(env, user, post.author_user_id, post.organization_id);
   const canEditEvent = post.section === "event" && await canManageEvent(env, user, post.organization_id);
 
-  const comments = await env.DB.prepare(
-    `SELECT c.id, c.body, c.created_at, u.id AS author_user_id, u.name AS author_name, u.email AS author_email
-     FROM comments c
-     JOIN users u ON u.id = c.author_user_id
-     WHERE c.post_id = ? AND c.status = 'published'
-     ORDER BY c.created_at`
-  )
-    .bind(post.id)
-    .all<{ id: string; body: string; created_at: string; author_user_id: string; author_name: string | null; author_email: string }>();
-  const visibleComments = await filterVisiblePeopleRows(env, user, comments.results ?? [], (comment) => comment.author_user_id);
-  const commentItems = visibleComments.length
-    ? visibleComments
-        .map((comment) => `<li><strong>${renderMemberLink(comment.author_user_id, comment.author_name || comment.author_email)}</strong><br /><span class="muted">${escapeHtml(formatDate(comment.created_at))}</span><p class="post-body">${escapeHtml(comment.body)}</p></li>`)
-        .join("")
-    : `<li><strong>No comments yet</strong><br /><span class="muted">Start the discussion below.</span></li>`;
+  const visibleComments = await getVisiblePostComments(env, user, post.id);
   const meta = sectionMeta(post.section);
 
   return layout(post.title, String.raw`
@@ -1899,7 +1896,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
             <h2>Add comment</h2>
             <span class="badge">Members</span>
           </div>
-          <form method="post" action="/posts/${escapeHtml(post.id)}/comments">
+          <form method="post" action="/posts/${escapeHtml(post.id)}/comments" hx-post="/posts/${escapeHtml(post.id)}/comments" hx-target="#comments-panel" hx-swap="outerHTML">
             <label>
               Comment
               <textarea name="body" required></textarea>
@@ -1908,16 +1905,41 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
           </form>
         </aside>
 
-        <aside class="panel">
-          <div class="panel-head">
-            <h2>Comments</h2>
-            <span class="badge">${visibleComments.length} shown</span>
-          </div>
-          <ul class="compact-list">${commentItems}</ul>
-        </aside>
+        ${renderCommentsPanel(visibleComments)}
       </section>
     </section>
   `, user);
+}
+
+async function getVisiblePostComments(env: Env, user: User, postId: string) {
+  const comments = await env.DB.prepare(
+    `SELECT c.id, c.body, c.created_at, u.id AS author_user_id, u.name AS author_name, u.email AS author_email
+     FROM comments c
+     JOIN users u ON u.id = c.author_user_id
+     WHERE c.post_id = ? AND c.status = 'published'
+     ORDER BY c.created_at`
+  )
+    .bind(postId)
+    .all<CommentPreview>();
+  return filterVisiblePeopleRows(env, user, comments.results ?? [], (comment) => comment.author_user_id);
+}
+
+function renderCommentsPanel(comments: CommentPreview[]) {
+  const commentItems = comments.length
+    ? comments
+        .map((comment) => `<li><strong>${renderMemberLink(comment.author_user_id, comment.author_name || comment.author_email)}</strong><br /><span class="muted">${escapeHtml(formatDate(comment.created_at))}</span><p class="post-body">${escapeHtml(comment.body)}</p></li>`)
+        .join("")
+    : `<li><strong>No comments yet</strong><br /><span class="muted">Start the discussion below.</span></li>`;
+
+  return String.raw`
+    <aside class="panel" id="comments-panel">
+      <div class="panel-head">
+        <h2>Comments</h2>
+        <span class="badge">${comments.length} shown</span>
+      </div>
+      <ul class="compact-list">${commentItems}</ul>
+    </aside>
+  `;
 }
 
 function renderVideoEmbed(post: {
@@ -2259,6 +2281,9 @@ async function handleCreateComment(request: Request, env: Env, user: User, postI
     .run();
 
   await writeAudit(env, user.id, "comment.created", "comment", commentId, { post_id: post.id });
+  if (isHtmxRequest(request)) {
+    return html(renderCommentsPanel(await getVisiblePostComments(env, user, post.id)));
+  }
   return redirect(`/posts/${post.id}`);
 }
 
@@ -4065,6 +4090,8 @@ function layout(title: string, body: string, user: User | null) {
       content="A secure member-only community for New Hampshire organizations sharing legislation, events, projects, and mutual support."
     />
     <style>${baseStyles}</style>
+    <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/csp@3.15.12/dist/cdn.min.js"></script>
   </head>
   <body>
     <main>
@@ -4116,7 +4143,7 @@ function html(body: string, status = 200, headers: HeadersInit = {}) {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'self'; img-src 'self' https: data:; script-src 'self' https://www.tiktok.com; frame-src https://www.tiktok.com https://*.tiktok.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      "content-security-policy": "default-src 'self'; img-src 'self' https: data:; script-src 'self' https://www.tiktok.com https://cdn.jsdelivr.net; frame-src https://www.tiktok.com https://*.tiktok.com; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
       "x-content-type-options": "nosniff",
       "referrer-policy": "strict-origin-when-cross-origin",
       ...headers,
@@ -4133,6 +4160,10 @@ function json(value: unknown, status = 200) {
       "x-content-type-options": "nosniff",
     },
   });
+}
+
+function isHtmxRequest(request: Request) {
+  return request.headers.get("HX-Request") === "true";
 }
 
 function redirect(location: string, headers: HeadersInit = {}) {
