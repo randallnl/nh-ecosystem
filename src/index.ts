@@ -955,6 +955,11 @@ const baseStyles = String.raw`
     background: var(--soft-blue) !important;
   }
 
+  .review-resolution {
+    border-color: rgba(34, 197, 94, 0.35) !important;
+    background: rgba(240, 253, 244, 0.9) !important;
+  }
+
   .compact-list a,
   .tile a {
     color: var(--accent);
@@ -2343,7 +2348,7 @@ async function handleApproveEvent(request: Request, env: Env, user: User, postId
     organization_id: post.organization_id || null,
   });
   if (isHtmxRequest(request)) {
-    return html("");
+    return html(renderReviewResolution(post.id, "Approved", "This item is now published."));
   }
   return redirect(returnTo);
 }
@@ -2363,7 +2368,7 @@ async function handleRejectEvent(request: Request, env: Env, user: User, postId:
     organization_id: post.organization_id || null,
   });
   if (isHtmxRequest(request)) {
-    return html("");
+    return html(renderReviewResolution(post.id, "Rejected", "This item was archived and will not publish."));
   }
   return redirect(returnTo);
 }
@@ -4891,6 +4896,17 @@ function renderPendingEventReview(events: PendingEvent[], returnTo: string) {
       </div>
       <ul class="compact-list">${items}</ul>
     </section>
+  `;
+}
+
+function renderReviewResolution(postId: string, title: string, body: string) {
+  return String.raw`
+    <li id="review-${escapeHtml(postId)}" class="review-resolution">
+      <div class="list-copy">
+        <strong>${escapeHtml(title)}</strong>
+        <p class="muted">${escapeHtml(body)}</p>
+      </div>
+    </li>
   `;
 }
 
