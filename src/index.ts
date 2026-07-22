@@ -955,11 +955,6 @@ const baseStyles = String.raw`
     background: var(--soft-blue) !important;
   }
 
-  .review-resolution {
-    border-color: rgba(34, 197, 94, 0.35) !important;
-    background: rgba(240, 253, 244, 0.9) !important;
-  }
-
   .compact-list a,
   .tile a {
     color: var(--accent);
@@ -2348,7 +2343,7 @@ async function handleApproveEvent(request: Request, env: Env, user: User, postId
     organization_id: post.organization_id || null,
   });
   if (isHtmxRequest(request)) {
-    return html(renderReviewResolution(post.id, "Approved", "This item is now published."));
+    return html(await renderPendingReviewPanel(env, user, post, returnTo));
   }
   return redirect(returnTo);
 }
@@ -2368,7 +2363,7 @@ async function handleRejectEvent(request: Request, env: Env, user: User, postId:
     organization_id: post.organization_id || null,
   });
   if (isHtmxRequest(request)) {
-    return html(renderReviewResolution(post.id, "Rejected", "This item was archived and will not publish."));
+    return html(await renderPendingReviewPanel(env, user, post, returnTo));
   }
   return redirect(returnTo);
 }
@@ -4871,11 +4866,11 @@ function renderPendingEventReview(events: PendingEvent[], returnTo: string) {
                   ${event.scraped_at ? `<span class="badge">Scraped ${escapeHtml(formatDate(event.scraped_at))}</span>` : ""}
                 </div>
                 <div class="review-actions">
-                  <form method="post" action="/posts/${escapeHtml(event.id)}/approve" hx-post="/posts/${escapeHtml(event.id)}/approve" hx-target="#review-${escapeHtml(event.id)}" hx-swap="outerHTML">
+                  <form method="post" action="/posts/${escapeHtml(event.id)}/approve" hx-post="/posts/${escapeHtml(event.id)}/approve" hx-target="#pending-event-review" hx-swap="outerHTML">
                     <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
                     <button class="primary" type="submit">Approve</button>
                   </form>
-                  <form method="post" action="/posts/${escapeHtml(event.id)}/reject" hx-post="/posts/${escapeHtml(event.id)}/reject" hx-target="#review-${escapeHtml(event.id)}" hx-swap="outerHTML">
+                  <form method="post" action="/posts/${escapeHtml(event.id)}/reject" hx-post="/posts/${escapeHtml(event.id)}/reject" hx-target="#pending-event-review" hx-swap="outerHTML">
                     <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
                     <button class="danger" type="submit">Reject</button>
                   </form>
@@ -4889,7 +4884,7 @@ function renderPendingEventReview(events: PendingEvent[], returnTo: string) {
     : `<li><strong>No pending events</strong><br /><span class="muted">New scraped events will appear here for review before publishing.</span></li>`;
 
   return String.raw`
-    <section class="panel">
+    <section class="panel" id="pending-event-review">
       <div class="panel-head">
         <h2>Pending event review</h2>
         <span class="badge">${events.length} pending</span>
@@ -4899,15 +4894,17 @@ function renderPendingEventReview(events: PendingEvent[], returnTo: string) {
   `;
 }
 
-function renderReviewResolution(postId: string, title: string, body: string) {
-  return String.raw`
-    <li id="review-${escapeHtml(postId)}" class="review-resolution">
-      <div class="list-copy">
-        <strong>${escapeHtml(title)}</strong>
-        <p class="muted">${escapeHtml(body)}</p>
-      </div>
-    </li>
-  `;
+async function renderPendingReviewPanel(
+  env: Env,
+  user: User,
+  post: { section: string; organization_id: string | null; has_video?: number },
+  returnTo: string
+) {
+  const organizationId = returnTo.startsWith("/organizations/") ? post.organization_id || undefined : undefined;
+  if (post.section === "update" && post.has_video) {
+    return renderPendingVideoReview(await getPendingVideos(env, user, organizationId), returnTo);
+  }
+  return renderPendingEventReview(await getPendingEvents(env, user, organizationId), returnTo);
 }
 
 async function getPendingVideos(env: Env, user: User, organizationId?: string) {
@@ -4959,11 +4956,11 @@ function renderPendingVideoReview(videos: PendingVideo[], returnTo: string) {
               </div>
               ${video.video_title ? `<p class="muted">${escapeHtml(excerpt(video.video_title, 180))}</p>` : ""}
               <div class="review-actions">
-                <form method="post" action="/posts/${escapeHtml(video.id)}/approve" hx-post="/posts/${escapeHtml(video.id)}/approve" hx-target="#review-${escapeHtml(video.id)}" hx-swap="outerHTML">
+                <form method="post" action="/posts/${escapeHtml(video.id)}/approve" hx-post="/posts/${escapeHtml(video.id)}/approve" hx-target="#pending-video-review" hx-swap="outerHTML">
                   <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
                   <button class="primary" type="submit">Approve</button>
                 </form>
-                <form method="post" action="/posts/${escapeHtml(video.id)}/reject" hx-post="/posts/${escapeHtml(video.id)}/reject" hx-target="#review-${escapeHtml(video.id)}" hx-swap="outerHTML">
+                <form method="post" action="/posts/${escapeHtml(video.id)}/reject" hx-post="/posts/${escapeHtml(video.id)}/reject" hx-target="#pending-video-review" hx-swap="outerHTML">
                   <input type="hidden" name="return_to" value="${escapeHtml(safeReturnTo)}" />
                   <button class="danger" type="submit">Reject</button>
                 </form>
@@ -4976,7 +4973,7 @@ function renderPendingVideoReview(videos: PendingVideo[], returnTo: string) {
     : `<li><strong>No pending videos</strong><br /><span class="muted">TikTok updates submitted by members will appear here for review.</span></li>`;
 
   return String.raw`
-    <section class="panel">
+    <section class="panel" id="pending-video-review">
       <div class="panel-head">
         <h2>Pending video review</h2>
         <span class="badge">${videos.length} pending</span>
