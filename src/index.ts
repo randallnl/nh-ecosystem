@@ -965,6 +965,19 @@ const baseStyles = String.raw`
     white-space: pre-wrap;
   }
 
+  .mention-link {
+    color: var(--accent);
+    font-weight: 800;
+    text-decoration: none;
+    border-radius: var(--radius-pill);
+    background: rgba(37, 99, 235, 0.09);
+    padding: 1px 6px;
+  }
+
+  .mention-link:hover {
+    background: rgba(37, 99, 235, 0.16);
+  }
+
   .meta {
     display: flex;
     flex-wrap: wrap;
@@ -1684,6 +1697,12 @@ type CommentPreview = {
   author_email: string;
 };
 
+type MentionUser = {
+  id: string;
+  email: string;
+  name: string | null;
+};
+
 function applySectionFilters<T extends FeedPost>(posts: T[], section: string, searchParams: URLSearchParams) {
   if (section !== "event") {
     return posts;
@@ -1807,7 +1826,7 @@ function renderCommentPreviews(comments: CommentPreview[]) {
   }
   return String.raw`
     <div class="comment-preview">
-      ${comments.map((comment) => `<p><strong>${renderMemberLink(comment.author_user_id, comment.author_name || comment.author_email)}</strong>: ${escapeHtml(excerpt(comment.body, 110))}</p>`).join("")}
+      ${comments.map((comment) => `<p><strong>${renderMemberLink(comment.author_user_id, comment.author_name || comment.author_email)}</strong>: ${renderMentionedText(excerpt(comment.body, 110), [])}</p>`).join("")}
     </div>
   `;
 }
@@ -1935,6 +1954,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
   const canEditEvent = post.section === "event" && await canManageEvent(env, user, post.organization_id);
 
   const visibleComments = await getVisiblePostComments(env, user, post.id);
+  const mentionUsers = await getMentionableUsers(env, user);
   const meta = sectionMeta(post.section);
 
   return layout(post.title, String.raw`
@@ -1955,7 +1975,7 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
         <div class="event-detail-body">
           ${post.image_url ? `<img class="event-photo" src="${escapeHtml(post.image_url)}" alt="" loading="lazy" />` : ""}
           <div class="event-detail-copy">
-            <p class="post-body lede">${escapeHtml(post.body)}</p>
+            <p class="post-body lede">${renderMentionedText(post.body, mentionUsers)}</p>
             ${renderVideoEmbed(post)}
           </div>
         </div>
@@ -1975,19 +1995,25 @@ async function renderPostDetail(env: Env, user: User, postId: string) {
             <h2>Add comment</h2>
             <span class="badge">Members</span>
           </div>
-          <form method="post" action="/posts/${escapeHtml(post.id)}/comments" hx-post="/posts/${escapeHtml(post.id)}/comments" hx-target="#comments-panel" hx-swap="outerHTML">
-            <label>
-              Comment
-              <textarea name="body" required></textarea>
-            </label>
-            <button class="primary" type="submit">Comment</button>
-          </form>
+          ${renderCommentForm(post.id)}
         </aside>
 
-        ${renderCommentsPanel(visibleComments)}
+        ${renderCommentsPanel(visibleComments, mentionUsers)}
       </section>
     </section>
   `, user);
+}
+
+function renderCommentForm(postId: string, swapOutOfBand = false) {
+  return String.raw`
+    <form id="comment-form" method="post" action="/posts/${escapeHtml(postId)}/comments" hx-post="/posts/${escapeHtml(postId)}/comments" hx-target="#comments-panel" hx-swap="outerHTML"${swapOutOfBand ? ` hx-swap-oob="true"` : ""}>
+      <label>
+        Comment
+        <textarea name="body" required></textarea>
+      </label>
+      <button class="primary" type="submit">Comment</button>
+    </form>
+  `;
 }
 
 async function getVisiblePostComments(env: Env, user: User, postId: string) {
@@ -2003,10 +2029,10 @@ async function getVisiblePostComments(env: Env, user: User, postId: string) {
   return filterVisiblePeopleRows(env, user, comments.results ?? [], (comment) => comment.author_user_id);
 }
 
-function renderCommentsPanel(comments: CommentPreview[]) {
+function renderCommentsPanel(comments: CommentPreview[], mentionUsers: MentionUser[] = []) {
   const commentItems = comments.length
     ? comments
-        .map((comment) => `<li><strong>${renderMemberLink(comment.author_user_id, comment.author_name || comment.author_email)}</strong><br /><span class="muted">${escapeHtml(formatDate(comment.created_at))}</span><p class="post-body">${escapeHtml(comment.body)}</p></li>`)
+        .map((comment) => `<li><strong>${renderMemberLink(comment.author_user_id, comment.author_name || comment.author_email)}</strong><br /><span class="muted">${escapeHtml(formatDate(comment.created_at))}</span><p class="post-body">${renderMentionedText(comment.body, mentionUsers)}</p></li>`)
         .join("")
     : `<li><strong>No comments yet</strong><br /><span class="muted">Start the discussion below.</span></li>`;
 
@@ -2019,6 +2045,70 @@ function renderCommentsPanel(comments: CommentPreview[]) {
       <ul class="compact-list">${commentItems}</ul>
     </aside>
   `;
+}
+
+async function getMentionableUsers(env: Env, user: User) {
+  const members = await env.DB.prepare(
+    "SELECT id, email, name FROM users WHERE status = 'active' AND profile_visibility != 'hidden'"
+  ).all<MentionUser>();
+  return filterVisiblePeopleRows(env, user, members.results ?? [], (member) => member.id);
+}
+
+function renderMentionedText(text: string, users: MentionUser[]) {
+  if (!users.length || !text.includes("@")) {
+    return escapeHtml(text);
+  }
+  const targets = users
+    .flatMap((member) => mentionDisplayCandidates(member).map((trigger) => ({ trigger, member })))
+    .sort((left, right) => right.trigger.length - left.trigger.length);
+  if (!targets.length) {
+    return escapeHtml(text);
+  }
+
+  let html = "";
+  let cursor = 0;
+  let index = 0;
+  while (index < text.length) {
+    if (text[index] !== "@") {
+      index += 1;
+      continue;
+    }
+    const match = targets.find((target) => {
+      const end = index + 1 + target.trigger.length;
+      return text.slice(index + 1, end).toLowerCase() === target.trigger && isMentionBoundary(text[end]);
+    });
+    if (!match) {
+      index += 1;
+      continue;
+    }
+    const end = index + 1 + match.trigger.length;
+    html += escapeHtml(text.slice(cursor, index));
+    html += `<a class="mention-link" href="/members/${escapeHtml(match.member.id)}">${escapeHtml(text.slice(index, end))}</a>`;
+    index = end;
+    cursor = end;
+  }
+  return html + escapeHtml(text.slice(cursor));
+}
+
+function mentionDisplayCandidates(member: MentionUser) {
+  const localEmail = member.email.split("@")[0] || "";
+  const name = member.name || "";
+  const rawCandidates = [
+    localEmail,
+    ...localEmail.split(/[._-]+/),
+    name,
+    slugify(name),
+    ...name.split(/\s+/),
+  ];
+  return [...new Set(rawCandidates.map(normalizeMentionDisplayHandle).filter(Boolean))];
+}
+
+function normalizeMentionDisplayHandle(value: string) {
+  return value.toLowerCase().replace(/^@/, "").replace(/\s+/g, " ").trim();
+}
+
+function isMentionBoundary(value: string | undefined) {
+  return !value || !/[a-z0-9._-]/i.test(value);
 }
 
 function renderVideoEmbed(post: {
@@ -2371,7 +2461,11 @@ async function handleCreateComment(request: Request, env: Env, user: User, postI
 
   await writeAudit(env, user.id, "comment.created", "comment", commentId, { post_id: post.id });
   if (isHtmxRequest(request)) {
-    return html(renderCommentsPanel(await getVisiblePostComments(env, user, post.id)));
+    const [comments, mentionUsers] = await Promise.all([
+      getVisiblePostComments(env, user, post.id),
+      getMentionableUsers(env, user),
+    ]);
+    return html(`${renderCommentsPanel(comments, mentionUsers)}${renderCommentForm(post.id, true)}`);
   }
   return redirect(`/posts/${post.id}`);
 }
